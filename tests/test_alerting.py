@@ -29,6 +29,7 @@ import urllib.request
 import uuid
 from collections.abc import Iterator
 from datetime import datetime, timezone
+from email.header import decode_header, make_header
 from pathlib import Path
 from types import SimpleNamespace
 from typing import ClassVar
@@ -913,17 +914,30 @@ def test_send_email_uses_the_configured_port_and_host(
     assert (smtp.host, smtp.port) == ("smtp.example.com", 2525)
 
 
+def _as_ntfy_records(title_header: str | None, body: bytes) -> tuple[str | None, str]:
+    """What a real ntfy server records for a publish to a TOPIC URL, as measured against ntfy
+    2.28: the `Title` header, RFC 2047-decoded, is the title; the body is the message, with
+    leading/trailing whitespace trimmed by the server. A JSON body posted to a topic URL is NOT
+    interpreted — the JSON text is the message and the title stays empty, which is the v1.6.1
+    defect these tests pin."""
+    title = None
+    if title_header is not None:
+        title = str(make_header(decode_header(title_header)))
+    return title, body.decode("utf-8").strip()
+
+
 def test_post_ntfy_sends_the_body_and_the_severity_headers(
         monkeypatch: pytest.MonkeyPatch) -> None:
     """`Priority`/`Tags` ARE the rendering: ntfy turns the `Tags` NAME into the emoji, and
-    `Priority` decides whether the phone buzzes. `title`/`message` travel in the JSON body, not
-    headers (kw-common#32 — a header is latin-1-only; the body is UTF-8). Swapping the header
-    pair survived a mutation sweep."""
+    `Priority` decides whether the phone buzzes. The title travels as an RFC 2047 `Title` header
+    and the message as the plain body (kw-common#32 — a raw header is latin-1-only; kw-common#34
+    — a JSON body posted to a topic URL is shown as the message with no title). Swapping the
+    header pair survived a mutation sweep."""
     captured: dict[str, object] = {}
 
     def fake_urlopen(req: object, timeout: float | None = None) -> object:
         captured["url"] = req.full_url  # type: ignore[attr-defined]
-        captured["body"] = json.loads(req.data)  # type: ignore[attr-defined]
+        captured["body"] = req.data  # type: ignore[attr-defined]
         captured["headers"] = dict(req.headers)  # type: ignore[attr-defined]
         captured["timeout"] = timeout
 
@@ -958,12 +972,14 @@ def test_post_ntfy_sends_the_body_and_the_severity_headers(
     alerting._post_ntfy(cfg, alerting.SEVERITIES[ERROR], "svc: down", "connection refused")
 
     assert captured["url"] == "https://ntfy.example.com/svc"
-    assert captured["body"] == {"title": "[ERROR] svc: down", "message": "connection refused"}
-    assert captured["timeout"] == alerting.NTFY_TIMEOUT_S
     headers = captured["headers"]
+    assert _as_ntfy_records(headers["Title"], captured["body"]) == (
+        "[ERROR] svc: down", "connection refused")
+    assert captured["body"] == b"connection refused", "the body must be the message, verbatim"
+    assert captured["timeout"] == alerting.NTFY_TIMEOUT_S
     assert headers["Priority"] == "urgent"
     assert headers["Tags"] == "red_circle"
-    assert headers["Content-type"] == "application/json"
+    assert headers.get("Content-type") != "application/json"
 
 
 # ⭐ CORPUS: the fleet's own message punctuation conventions (kw-common#32). Each of these, put
@@ -982,11 +998,13 @@ _NON_LATIN1_TITLE_CORPUS = (
 def test_post_ntfy_delivers_titles_outside_latin1(
         title: str, monkeypatch: pytest.MonkeyPatch) -> None:
     """A title carrying the fleet's own punctuation conventions must reach ntfy, not raise
-    `UnicodeEncodeError` before the request is sent (kw-common#32)."""
+    `UnicodeEncodeError` before the request is sent (kw-common#32), and must arrive as the title
+    (kw-common#34)."""
     captured: dict[str, object] = {}
 
     def fake_urlopen(req: object, timeout: float | None = None) -> object:
-        captured["body"] = json.loads(req.data)  # type: ignore[attr-defined]
+        captured["body"] = req.data  # type: ignore[attr-defined]
+        captured["headers"] = dict(req.headers)  # type: ignore[attr-defined]
 
         class Response:
             def read(self) -> bytes:
@@ -1006,7 +1024,56 @@ def test_post_ntfy_delivers_titles_outside_latin1(
     alerting._post_ntfy(AlertConfig(ntfy_url="https://ntfy.example.com/t"),
                         alerting.SEVERITIES[WARN], title, "m")
 
-    assert captured["body"] == {"title": f"[WARN] {title}", "message": "m"}
+    headers = captured["headers"]
+    assert headers["Title"].isascii(), "a raw non-latin-1 header is what raised in v1.6.0 (#32)"
+    assert _as_ntfy_records(headers["Title"], captured["body"]) == (f"[WARN] {title}", "m")
+
+
+# ⭐ QUOTES, BACKSLASHES, NEWLINES, a non-BMP character, and header-shaped text — in BOTH the title
+# and the message, because each travels a different way (header vs body) and an escaping scheme
+# that is right for one is wrong for the other. The last title is text that LOOKS like an RFC 2047
+# encoded-word: ntfy decodes any such header it receives, so a title sent unencoded would be
+# altered; this pins that the title is always encoded.
+_AWKWARD_TEXT = (
+    ('say "stop" now', 'line "one"\nline two\\three'),
+    ("two\nlines", "tab\there\r\nand a CRLF"),
+    ("rocket \U0001F680 — go", "— em-dash → arrow é \U0001F680"),
+    ("=?UTF-8?B?QQ==?= tail", "{\"title\": \"not json to ntfy\"}"),
+)
+
+
+@pytest.mark.parametrize(("title", "message"), _AWKWARD_TEXT)
+def test_post_ntfy_round_trips_quotes_newlines_and_unicode_in_title_and_message(
+        title: str, message: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_urlopen(req: object, timeout: float | None = None) -> object:
+        captured["body"] = req.data  # type: ignore[attr-defined]
+        captured["headers"] = dict(req.headers)  # type: ignore[attr-defined]
+
+        class Response:
+            def read(self) -> bytes:
+                return b"ok"
+
+            def __enter__(self) -> Response:
+                return self
+
+            def __exit__(self, *_exc: object) -> None:
+                return None
+
+        return Response()
+
+    monkeypatch.setattr(alerting, "_NTFY_OPENER", SimpleNamespace(open=fake_urlopen))
+
+    alerting._post_ntfy(AlertConfig(ntfy_url="https://ntfy.example.com/t"),
+                        alerting.SEVERITIES[ERROR], title, message)
+
+    headers = captured["headers"]
+    assert headers["Title"].isascii() and "\n" not in headers["Title"], (
+        "the header must be one ASCII line, or http.client refuses it")
+    assert _as_ntfy_records(headers["Title"], captured["body"]) == (
+        f"[ERROR] {title}", message)
+    assert captured["body"] == message.encode("utf-8")
 
 
 # ======================================= no credential reaches any sink on a failure path (#2)
@@ -2792,13 +2859,14 @@ class _Recorder(http.server.BaseHTTPRequestHandler):
     """Records what it was actually POSTed. `received` is a class attribute so the test can read
     it without holding the instance."""
 
-    received: ClassVar[list[tuple[str, str | None, bytes]]] = []
+    received: ClassVar[list[tuple[str, str | None, str]]] = []
 
     def do_POST(self) -> None:
         length = int(self.headers.get("Content-Length") or 0)
         raw = self.rfile.read(length)
-        title = json.loads(raw)["title"]
-        _Recorder.received.append((self.path, title, raw))
+        # Records what ntfy itself would record for a topic-URL publish (`_as_ntfy_records`).
+        title, message = _as_ntfy_records(self.headers.get("Title"), raw)
+        _Recorder.received.append((self.path, title, message))
         self.send_response(200)
         self.send_header("Content-Length", "2")
         self.end_headers()
@@ -2865,17 +2933,18 @@ def test_post_ntfy_refuses_to_follow_a_redirect() -> None:
 def test_post_ntfy_still_delivers_when_the_server_does_not_redirect() -> None:
     """⭐ THE NEGATIVE DIRECTION, and it is the half that makes the test above mean something: an
     opener that refused EVERY request would satisfy "the target received nothing" perfectly.
-    The title carries an em-dash — kw-common#32's own trigger — proving over a REAL socket
-    (not a stubbed opener) that a non-latin-1 title reaches ntfy well-formed end to end."""
+    The title carries an em-dash — kw-common#32's own trigger — and the message quotes and a
+    newline, proving over a REAL socket (not a stubbed opener) that the title ARRIVES AS THE TITLE
+    and the message as plain text (kw-common#34: v1.6.1 recorded no title and the JSON text as
+    the message)."""
     _Recorder.received = []
     with _loopback_server(_Recorder) as target:
         cfg = AlertConfig(ntfy_url=f"http://127.0.0.1:{target.server_port}/topic",
                           allow_cleartext_ntfy=True)
         alerting._post_ntfy(cfg, alerting.SEVERITIES[ERROR], "svc: down — gone",
-                            "no route to host")
+                            'no route to "host"\nsecond line')
     assert _Recorder.received == [
-        ("/topic", "[ERROR] svc: down — gone",
-         b'{"title": "[ERROR] svc: down \xe2\x80\x94 gone", "message": "no route to host"}'),
+        ("/topic", "[ERROR] svc: down — gone", 'no route to "host"\nsecond line'),
     ]
 
 

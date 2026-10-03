@@ -9,6 +9,30 @@ exported symbol that changed. ⛔ It does NOT name the consumers that need a cod
 repository is public, and honouring that older promise would publish the fleet's inventory at
 exactly the moment the release notes are read most widely.
 
+## [1.6.2] - 2026-10-02
+
+**Fixes ntfy alerts arriving as raw JSON with no title** (`#34`). Every ntfy alert sent by
+**v1.6.1** shows on the phone as one block of text beginning `{"title": "...", "message": "..."}`
+with the backslash-n escapes visible, and the notification title is only the topic name. ntfy interprets
+a JSON body only when it is published to the server root with a `topic` field; posted to a topic
+URL, the body is the message verbatim. The title now travels as an RFC 2047 encoded-word `Title`
+header (pure ASCII, so it can carry any text, including characters outside latin-1 such as an
+em-dash — `#32` does not regress) and the message is the plain UTF-8 body. `Priority`/`Tags` are
+unchanged. No name in `__all__` changed — PATCH.
+
+### Which tags are affected, and what to bump to
+
+* **v1.6.1 — affected.** Bump to **v1.6.2**.
+* **v1.6.0 and earlier — not affected by the raw-JSON display**, but an alert whose title carries a
+  character outside latin-1 is never sent (`#32`, `UnicodeEncodeError`). Bumping to **v1.6.2**
+  fixes that too.
+
+### Behaviour to know
+
+* ntfy trims leading and trailing whitespace from the message body; that is the server's behaviour.
+* ntfy answers 400 to a message body of about 4096 bytes or more (and to a very long title), so
+  such an alert is still not delivered by the ntfy channel. Unchanged by this release.
+
 ## [1.6.1] - 2026-09-16
 
 **Fixes the ntfy channel dropping an alert whose title carries a character outside latin-1** (an
