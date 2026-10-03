@@ -199,6 +199,7 @@ THE RETRIEVABLE ERROR LOG (`error_log=`)
 
 from __future__ import annotations
 
+import base64
 import contextlib
 import errno
 import http.client
@@ -1669,14 +1670,14 @@ class _RefuseRedirects(urllib.request.HTTPRedirectHandler):
 
     ⭐ A PUBLISH ENDPOINT HAS NO BUSINESS REDIRECTING, and following one hands the alert to a host
     the operator never configured. `urlopen` re-issues the request AT THE NEW LOCATION WITH THE
-    BODY INTACT — the JSON body carries `title` (`[SEV] <title>`, the identifying half of the
-    message) and `message`. (`_post_ntfy` builds the title from the severity's own prefix and the
-    title it was handed. The SERVICE NAME has never been in it; on a shared topic
-    `AlertSettings.title_prefix` puts `[<env>][<service>] ` at the front of the title itself, which
-    is a property of the topic rather than of this field.) The target need not share the original
-    host or even the scheme, so an `https` topic can be handed to a cleartext one by a single
-    `302` from a compromised or merely misconfigured endpoint. `ntfy_ready()` validates the URL
-    the OPERATOR chose; it has nothing to say about where that server then points.
+    BODY INTACT — the body is the `message` and the `Title` header (`[SEV] <title>`, the
+    identifying half of the message) is replayed with it. (`_post_ntfy` builds the title from the
+    severity's own prefix and the title it was handed. The SERVICE NAME has never been in it; on a
+    shared topic `AlertSettings.title_prefix` puts `[<env>][<service>] ` at the front of the title
+    itself, which is a property of the topic rather than of this field.) The target need not share
+    the original host or even the scheme, so an `https` topic can be handed to a cleartext one by
+    a single `302` from a compromised or merely misconfigured endpoint. `ntfy_ready()` validates
+    the URL the OPERATOR chose; it has nothing to say about where that server then points.
 
     Returning `None` here makes `HTTPRedirectHandler.http_error_3xx` decline, so the `3xx` falls
     through to `HTTPDefaultErrorHandler` and is raised as an ordinary `HTTPError` — i.e. it
@@ -1714,17 +1715,22 @@ def _ntfy_opener() -> urllib.request.OpenerDirector:
 
 
 def _post_ntfy(cfg: AlertConfig, spec: SeveritySpec, title: str, message: str) -> None:
-    # Title/message go in the JSON BODY, not headers: http.client encodes header values latin-1,
-    # so a title carrying anything outside that range (an em-dash, an arrow) raised
-    # UnicodeEncodeError before the request was ever sent (kw-common#32). The body is UTF-8 JSON
-    # and has no such limit. `Priority`/`Tags` stay ASCII by construction (`SeveritySpec`'s own
-    # fixed values) and are left as headers — ntfy accepts either place for them, and moving them
-    # too would be change without benefit.
+    # ⭐ THE BODY IS THE MESSAGE, VERBATIM; THE TITLE IS AN RFC 2047 ENCODED-WORD HEADER.
+    # `http.client` encodes header values latin-1, so a raw `Title` carrying an em-dash or an arrow
+    # raised UnicodeEncodeError before anything was sent (kw-common#32). The encoded-word is pure
+    # ASCII (so it can carry any text, including CR/LF) and ntfy decodes it back to UTF-8.
+    # ⚠️ DO NOT MOVE THESE INTO A JSON BODY POSTED TO THE TOPIC URL: ntfy reads JSON only when it
+    # is published to the server ROOT with a `topic` field. Posted to a topic URL the whole JSON
+    # text IS the message and the title is empty (measured against ntfy 2.28; v1.6.0/v1.6.1).
+    # Always encoded, never only-when-non-ASCII: ntfy decodes any `=?...?=` header it sees, so a
+    # plain title that happened to contain one would be altered. `Priority`/`Tags` stay ASCII by
+    # construction (`SeveritySpec`'s own fixed values).
+    encoded_title = "=?UTF-8?B?" + base64.b64encode(
+        f"{spec.prefix} {title}".encode()).decode("ascii") + "?="
     req = urllib.request.Request(  # noqa: S310 — scheme gated by ntfy_ready()
         cfg.ntfy_url,
-        data=json.dumps({"title": f"{spec.prefix} {title}", "message": message},
-                         ensure_ascii=False).encode("utf-8"),
-        headers={"Content-Type": "application/json",
+        data=message.encode("utf-8"),
+        headers={"Title": encoded_title,
                  "Priority": spec.ntfy_priority,
                  "Tags": spec.ntfy_tags},
     )
