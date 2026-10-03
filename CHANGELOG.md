@@ -13,8 +13,7 @@ exactly the moment the release notes are read most widely.
 
 **Fixes ntfy alerts arriving as raw JSON with no title** (`#34`). Every ntfy alert sent by
 **v1.6.1** shows on the phone as one block of text beginning `{"title": "...", "message": "..."}`
-with the `
-` escapes visible, and the notification title is only the topic name. ntfy interprets
+with the backslash-n escapes visible, and the notification title is only the topic name. ntfy interprets
 a JSON body only when it is published to the server root with a `topic` field; posted to a topic
 URL, the body is the message verbatim. The title now travels as an RFC 2047 encoded-word `Title`
 header (pure ASCII, so it can carry any text, including characters outside latin-1 such as an
