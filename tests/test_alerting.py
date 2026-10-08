@@ -1076,6 +1076,92 @@ def test_post_ntfy_round_trips_quotes_newlines_and_unicode_in_title_and_message(
     assert captured["body"] == message.encode("utf-8")
 
 
+# ======================================= ntfy message/title bounds (#36)
+# ntfy answers 400 to a ~4096-byte body and a ~1000-byte title; `_post_ntfy` must cap both.
+def _send_ntfy(title: str, message: str, monkeypatch: pytest.MonkeyPatch) -> tuple[str, bytes]:
+    """Run `_post_ntfy` against a spy; return the raw `Title` header and the body sent."""
+    captured: dict[str, object] = {}
+
+    def fake_open(req: object, timeout: float | None = None) -> object:
+        captured["body"] = req.data  # type: ignore[attr-defined]
+        captured["headers"] = dict(req.headers)  # type: ignore[attr-defined]
+
+        class Response:
+            def read(self) -> bytes:
+                return b"ok"
+
+            def __enter__(self) -> Response:
+                return self
+
+            def __exit__(self, *_exc: object) -> None:
+                return None
+
+        return Response()
+
+    monkeypatch.setattr(alerting, "_NTFY_OPENER", SimpleNamespace(open=fake_open))
+    alerting._post_ntfy(AlertConfig(ntfy_url="https://ntfy.example.com/t"),
+                        alerting.SEVERITIES[ERROR], title, message)
+    return captured["headers"]["Title"], captured["body"]  # type: ignore[index, return-value]
+
+
+_MSG_MAX = alerting._NTFY_MAX_MESSAGE_BYTES
+_TITLE_MAX = alerting._NTFY_MAX_TITLE_BYTES
+_MARK = alerting._NTFY_TRUNCATED
+_PREFIX = "[ERROR] "
+
+
+def test_ntfy_message_under_and_exactly_at_the_bound_is_unchanged(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    for message in ("short", "x" * _MSG_MAX):
+        _, body = _send_ntfy("t", message, monkeypatch)
+        assert body == message.encode()
+
+
+def test_ntfy_message_over_the_bound_is_truncated_with_a_marker(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    _, body = _send_ntfy("t", "x" * (_MSG_MAX + 1), monkeypatch)
+    assert body.decode().endswith(_MARK)
+    assert len(body) <= _MSG_MAX < 4096
+
+
+@pytest.mark.parametrize("char", ["—", "\U0001F680"])
+def test_ntfy_message_multibyte_text_is_cut_on_a_character_boundary(
+        char: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    message = char * _MSG_MAX  # every byte offset near the cut is inside or between characters
+    _, body = _send_ntfy("t", message, monkeypatch)
+    text = body.decode("utf-8")  # raises if the cut split a character
+    assert text.endswith(_MARK)
+    assert len(body) <= _MSG_MAX
+    assert set(text[:-len(_MARK)]) == {char}
+
+
+def test_ntfy_title_under_and_exactly_at_the_bound_is_unchanged(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    for title in ("short", "x" * (_TITLE_MAX - len(_PREFIX))):
+        header, _ = _send_ntfy(title, "m", monkeypatch)
+        assert _as_ntfy_records(header, b"m")[0] == _PREFIX + title
+
+
+def test_ntfy_title_over_the_bound_is_truncated_and_its_encoded_form_stays_small(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    header, _ = _send_ntfy("x" * 5000, "m", monkeypatch)
+    decoded = _as_ntfy_records(header, b"m")[0]
+    assert decoded is not None
+    assert decoded.endswith(_MARK)
+    assert len(header) < 750 < 1000, "the RFC 2047 header, not the raw text, is what ntfy limits"
+
+
+@pytest.mark.parametrize("char", ["—", "\U0001F680"])
+def test_ntfy_title_multibyte_text_is_cut_on_a_character_boundary(
+        char: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    header, _ = _send_ntfy(char * _TITLE_MAX, "m", monkeypatch)
+    decoded = _as_ntfy_records(header, b"m")[0]  # raises if the cut split a character
+    assert decoded is not None
+    assert decoded.endswith(_MARK)
+    assert len(header) < 750
+    assert set(decoded[len(_PREFIX):-len(_MARK)]) == {char}
+
+
 # ======================================= no credential reaches any sink on a failure path (#2)
 # ⭐⭐ THE CONTAINMENT PROPERTY, ASSERTED ON EVERY SINK. A fault report reaches FOUR places — the
 # container log, the email body, the ntfy body, and the persistent error-log file on disk — so a

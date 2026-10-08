@@ -9,6 +9,15 @@ exported symbol that changed. ⛔ It does NOT name the consumers that need a cod
 repository is public, and honouring that older promise would publish the fleet's inventory at
 exactly the moment the release notes are read most widely.
 
+## [1.6.3] - 2026-10-08
+
+**Stops ntfy dropping a long alert** (`#36`). ntfy answers HTTP 400 to a message body of about
+4096 bytes or more and to a title of about 1000 bytes, so an alert with a long traceback or title
+never reached the phone (email was unaffected). `_post_ntfy` now caps the message at 3000 bytes and
+the `[SEV] <title>` at 540 bytes (732 bytes once RFC 2047-encoded), cutting at a character boundary
+and ending with `…[truncated]`. Anything within the bound is sent unchanged. No name in `__all__`
+changed — PATCH.
+
 ## [1.6.2] - 2026-10-02
 
 **Fixes ntfy alerts arriving as raw JSON with no title** (`#34`). Every ntfy alert sent by

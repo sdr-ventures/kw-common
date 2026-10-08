@@ -1714,6 +1714,25 @@ def _ntfy_opener() -> urllib.request.OpenerDirector:
     return _NTFY_OPENER
 
 
+# ntfy answers 400 to a body of ~4096 bytes and to a title of ~1000 bytes (kw-common#36, measured
+# on ntfy 2.28). Bounds sit 25%+ under those: body 3000 of 4096 (27% margin); title 540 raw bytes,
+# which RFC 2047 base64 expands to 12 + 4*ceil(540/3) = 732 header bytes, under 750 (25% of 1000).
+_NTFY_MAX_MESSAGE_BYTES = 3000
+_NTFY_MAX_TITLE_BYTES = 540
+_NTFY_TRUNCATED = "…[truncated]"
+
+
+def _cap_bytes(text: str, max_bytes: int) -> str:
+    """`text` unchanged if it fits `max_bytes` of UTF-8; else cut at a character boundary, with
+    the marker included in the budget."""
+    raw = text.encode("utf-8")
+    if len(raw) <= max_bytes:
+        return text
+    keep = max_bytes - len(_NTFY_TRUNCATED.encode("utf-8"))
+    # `ignore` drops a multibyte character the cut landed inside, never half of one.
+    return raw[:keep].decode("utf-8", errors="ignore") + _NTFY_TRUNCATED
+
+
 def _post_ntfy(cfg: AlertConfig, spec: SeveritySpec, title: str, message: str) -> None:
     # ⭐ THE BODY IS THE MESSAGE, VERBATIM; THE TITLE IS AN RFC 2047 ENCODED-WORD HEADER.
     # `http.client` encodes header values latin-1, so a raw `Title` carrying an em-dash or an arrow
@@ -1726,10 +1745,10 @@ def _post_ntfy(cfg: AlertConfig, spec: SeveritySpec, title: str, message: str) -
     # plain title that happened to contain one would be altered. `Priority`/`Tags` stay ASCII by
     # construction (`SeveritySpec`'s own fixed values).
     encoded_title = "=?UTF-8?B?" + base64.b64encode(
-        f"{spec.prefix} {title}".encode()).decode("ascii") + "?="
+        _cap_bytes(f"{spec.prefix} {title}", _NTFY_MAX_TITLE_BYTES).encode()).decode("ascii") + "?="
     req = urllib.request.Request(  # noqa: S310 — scheme gated by ntfy_ready()
         cfg.ntfy_url,
-        data=message.encode("utf-8"),
+        data=_cap_bytes(message, _NTFY_MAX_MESSAGE_BYTES).encode("utf-8"),
         headers={"Title": encoded_title,
                  "Priority": spec.ntfy_priority,
                  "Tags": spec.ntfy_tags},
