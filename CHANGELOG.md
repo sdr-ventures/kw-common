@@ -44,6 +44,24 @@ module's `__all__` was removed or changed in signature — MINOR.
 * `#37` — the release workflow refused a `vX.Y.ZrcN` tag. It now publishes one as a pre-release
   of `X.Y.Z`; any other tag must still equal `v<__version__>`.
 
+### Distribution: adopting is a pin, not a copy
+
+* **A reusable workflow**, `.github/workflows/leak-guard.yml` (`workflow_call`, input `version`):
+  the self-test, the tree scan and the range scan of what the event publishes — for a tag, the
+  commits since the previous `v[0-9]*` tag and the tag object. One job id gives every repository
+  the same required check: `leak-guard / No internal info (leak guard)`.
+* **Hooks the package installs** (`#17`): `kw-leak-guard --install-hooks` writes a pre-commit and a
+  pre-push shim into the git directory, where no checkout removes them; `--check-hooks` says
+  whether git will run them; `--pre-commit` and `--pre-push <remote>` are what they call. A shim
+  whose interpreter is gone fails rather than skipping. This repository's own pre-push hook is now
+  installed the same way (copied into the git directory), not through a relative
+  `core.hooksPath`.
+* **A tag range no longer re-reads the previous release's annotation.** `release.yml` and the
+  reusable workflow name the base tag peeled to its commit; the guard reads a tag object for every
+  revision a range names, base included.
+* **`docs/ADOPTION.md`**: the migration for a Python service, a container, a template repository
+  and a vendored copy of the guard, and the checks that prove it worked.
+
 ## [1.6.3] - 2026-10-08
 
 **Stops ntfy dropping a long alert** (`#36`). ntfy answers HTTP 400 to a message body of about

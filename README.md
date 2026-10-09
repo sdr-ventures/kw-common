@@ -386,11 +386,16 @@ would then be published by the very artifacts it exists to keep clean — that w
 theorised. So the list lives in a guard that is committed to no repository at all, and
 `.githooks/pre-push` is what runs it, at the moment publication actually happens.
 
-Install it once per clone:
+Install it once per clone, into the git **directory** — which no checkout can remove (#17):
 
 ```
-git config core.hooksPath .githooks && git config kw.privateGuard "<absolute path to the project-side guard>"
+git config --unset core.hooksPath
+cp .githooks/pre-push "$(git rev-parse --git-path hooks)/pre-push"
+git config kw.privateGuard "<absolute path to the project-side guard>"
 ```
+
+The installed copy does not follow the checkout, so re-run the `cp` after `.githooks/pre-push`
+changes.
 
 It scans the tracked working tree (what the wheel and the sdist are built from) and the commits
 each ref would publish, and it **refuses the push** on any finding — and refuses outright when
@@ -404,15 +409,31 @@ which is the point, since refusing them blocks the cleanup itself. Anything eith
 publish is still scanned commit by commit.
 
 ⚠️ The unconfigured-guard refusal comes FIRST, before the ref list is read, so it applies to those
-two as well: on a fresh clone with `core.hooksPath` set and no `kw.privateGuard`, even a deletion
+two as well: on a fresh clone with the hook installed and no `kw.privateGuard`, even a deletion
 is refused — and the message names the config key rather than your tree.
 
 ⚠️ **Declared bounds.** A hook is a local convention. Nothing in this repository, and nothing in
-CI, can assert that it ran on somebody's machine — CI must not have the list either. And
-`core.hooksPath .githooks` is a RELATIVE path, resolved inside the working tree, so a checkout
-that predates the hook has none and git says nothing: see issue #17, and the hook's own header.
+CI, can assert that it ran on somebody's machine — CI must not have the list either. Do not
+install it with `core.hooksPath .githooks`: that path is resolved inside the working tree, so a
+checkout that predates the hook has none and git says nothing (#17).
 `tests/test_leak_guard_hook.py` drives the real hook against a real `git push` and asserts whether
 the remote ref moved; that is what can be checked here, and it says so rather than implying more.
+
+### Hooks for a repository that CONSUMES the guard
+
+A consuming repository does not copy hook scripts. The package installs them:
+
+```
+kw-leak-guard --install-hooks   # pre-commit: tree + --staged scans; pre-push: every ref's range
+kw-leak-guard --check-hooks     # exit 0 only if git will run both
+```
+
+Both hooks go into the repository's git directory, which no checkout removes and every linked
+worktree shares, and each `exec`s the interpreter that installed it — remove that interpreter or
+the package and the hook *fails*, so git refuses the commit or push instead of skipping the check.
+`--install-hooks` refuses while `core.hooksPath` is set (git would ignore the hooks) and never
+overwrites a hook it did not write. [`docs/ADOPTION.md`](docs/ADOPTION.md) is the full migration
+for each kind of repository.
 
 ### This repository is PUBLIC
 

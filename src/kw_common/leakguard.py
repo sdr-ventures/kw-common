@@ -2942,7 +2942,8 @@ def selftest(compiled: list[tuple[str, re.Pattern[str]]]) -> int:
 
 # ------------------------------------------------------------------------ the command line
 USAGE = """usage: kw-leak-guard
-           [--selftest | --staged | --range <revision-range>] [--repo <path>]
+           [--selftest | --staged | --range <revision-range> | --pre-commit |
+            --pre-push <remote> | --install-hooks | --check-hooks] [--repo <path>]
            [--config <path>]
 
   (no arguments)              scan the tracked working TREE
@@ -2950,6 +2951,12 @@ USAGE = """usage: kw-leak-guard
   --staged                    scan what is in the INDEX - what `git commit` would record
   --range <A..B>              scan the lines ADDED by every commit in the range
   --range=<A..B>              the same, joined form
+  --pre-commit                the pre-commit hook: the TREE scan, then the --staged scan
+  --pre-push <remote>         the pre-push hook: reads git's ref list on stdin and range-scans
+                              every ref the push publishes
+  --install-hooks             write the two hooks into this repository's git directory, where
+                              no checkout can remove them, calling THIS interpreter
+  --check-hooks               exit 0 only if git will run both installed hooks
   --repo <path>               the repository to scan (default: the one containing $PWD)
   --config <path>             this repository's allowances (default: <repo>/.leakguard.json
                               if it exists; without one, NOTHING is excused)
@@ -2977,6 +2984,10 @@ class Args(NamedTuple):
     # putting a new one in the middle silently rebinds every positional `Args(...)` call and
     # every test that builds one — a change with no error message anywhere.
     config: str | None = None
+    pre_commit: bool = False
+    pre_push: str | None = None
+    install_hooks: bool = False
+    check_hooks: bool = False
 
 
 def _value_for(flag: str, argv: list[str], i: int) -> str:
@@ -3010,6 +3021,10 @@ def parse_args(argv: list[str]) -> Args:
     want_help = False
     staged = False
     config: str | None = None
+    pre_commit = False
+    pre_push: str | None = None
+    install_hooks = False
+    check_hooks = False
     i = 0
     while i < len(argv):
         arg = argv[i]
@@ -3019,6 +3034,17 @@ def parse_args(argv: list[str]) -> Args:
             selftest = True
         elif arg == "--staged":
             staged = True
+        elif arg == "--pre-commit":
+            pre_commit = True
+        elif arg == "--pre-push":
+            # An EMPTY remote is allowed: it is what the shim passes when the hook is run by hand,
+            # and it widens the scan (nothing is excluded) rather than narrowing it.
+            pre_push = _value_for("--pre-push", argv, i)
+            i += 1
+        elif arg == "--install-hooks":
+            install_hooks = True
+        elif arg == "--check-hooks":
+            check_hooks = True
         elif arg == "--range":
             rev_range = _value_for("--range", argv, i)
             i += 1
@@ -3058,10 +3084,13 @@ def parse_args(argv: list[str]) -> Args:
     # this file has been bitten by repeatedly. Each combination would otherwise run ONE of the two
     # scans the caller asked for and report success — the silent substitution `parse_args` exists
     # to make impossible.
-    if sum((selftest, rev_range is not None, staged)) > 1:
-        raise UsageError("--selftest, --range and --staged do different things; "
+    modes = (selftest, rev_range is not None, staged, pre_commit, pre_push is not None,
+             install_hooks, check_hooks)
+    if sum(modes) > 1:
+        raise UsageError("--selftest, --range, --staged, --pre-commit, --pre-push, "
+                         "--install-hooks and --check-hooks do different things; "
                          "run them one at a time")
-    if want_help and (selftest or staged or rev_range is not None):
+    if want_help and any(modes):
         # `--range A..B --help` printed the usage and exited 0 — an accepted argument combination
         # that substitutes "no scan" for a scan and reports success. That is the same shape as the
         # ignored-argument defect, just harder to reach, so it is an error rather than a silent
@@ -3074,7 +3103,13 @@ def parse_args(argv: list[str]) -> Args:
         # config that stops a deny case being caught, and that runs on a real scan.
         raise UsageError("--selftest measures the shipped patterns, not a repository's config; "
                          "run a scan to have --config take effect")
-    return Args(selftest, rev_range, repo, want_help, staged, config)
+    if config is not None and (install_hooks or check_hooks):
+        # The installed hooks read `.leakguard.json` from the index on every run, like any scan;
+        # a `--config` here would be silently dropped rather than baked in.
+        raise UsageError("--install-hooks and --check-hooks scan nothing, so --config would be "
+                         "ignored; the hooks read the repository's own .leakguard.json")
+    return Args(selftest, rev_range, repo, want_help, staged, config, pre_commit, pre_push,
+                install_hooks, check_hooks)
 
 
 def _link_text(path: Path) -> bytes:
@@ -3633,6 +3668,135 @@ def _scan_commits(root: Path, rev_range: str,
     return 0
 
 
+# ------------------------------------------------------------------------------- the hooks
+# ⭐⭐ #17: A HOOK THAT A CHECKOUT CAN REMOVE IS A HOOK THAT CAN SILENTLY BE ABSENT. The fleet's
+# hooks lived in a TRACKED `.githooks/` with `core.hooksPath .githooks`, which git resolves inside
+# the working tree — so checking out a branch, a tag or a worktree that predates the hook left no
+# hook and no warning, and its absence looked exactly like a pass.
+#
+# So `--install-hooks` writes them into the repository's own git directory (`git rev-parse
+# --git-path hooks`), which no checkout touches and every linked worktree shares, and REFUSES while
+# `core.hooksPath` is set at any scope (git would ignore that directory). Each hook is a two-line
+# shim that `exec`s the interpreter which installed it: if that interpreter or this package is
+# later removed, the hook FAILS and git refuses the commit or push — loud, never a silent pass.
+# `--check-hooks` answers "will git run them" for a setup script or an adoption check, and CI runs
+# the same scans regardless, so a clone that never installed them is still caught at the PR.
+_HOOK_MARK = "# installed by kw-leak-guard --install-hooks"
+_HOOK_ARGS = {"pre-commit": "--pre-commit", "pre-push": '--pre-push "$1"'}
+
+
+def _hook_text(name: str, python: str) -> str:
+    return (f"#!/bin/sh\n{_HOOK_MARK} - re-run it to update this file.\n"
+            f"# Fails closed: if the interpreter below is gone, git refuses the {name}.\n"
+            f'exec "{python}" -m kw_common.leakguard {_HOOK_ARGS[name]}\n')
+
+
+def _hooks_dir(root: Path) -> tuple[Path | None, str]:
+    """(the directory git runs this repository's hooks from, "") — or (None, why not)."""
+    configured = subprocess.run(["git", "config", "--get", "core.hooksPath"], cwd=root,
+                                capture_output=True, text=True, timeout=_GIT_TIMEOUT_S).stdout
+    if configured.strip():
+        return None, (f"core.hooksPath is set ({configured.strip()!r}), so git runs hooks from "
+                      f"there and not from this repository's git directory. If it points into the "
+                      f"working tree it is the #17 trap: a checkout can remove it. Remove the "
+                      f"setting with `git config --unset core.hooksPath` (add --global if that is "
+                      f"where it is), then install again.")
+    hooks = Path(_git(root, "rev-parse", "--git-path", "hooks").strip())
+    return (hooks if hooks.is_absolute() else root / hooks).resolve(), ""
+
+
+def install_hooks(root: Path) -> int:
+    """Write the pre-commit and pre-push shims into the git directory. See `_HOOK_MARK`."""
+    hooks, why = _hooks_dir(root)
+    if hooks is None:
+        print(_ascii(f"NOT INSTALLED: {why}"))
+        return 1
+    # ⚠️ `absolute()`, NOT `resolve()`: a POSIX venv's `bin/python` is a SYMLINK to the base
+    # interpreter, and only the unresolved path activates the venv that has this package in it.
+    python = Path(sys.executable).absolute().as_posix()
+    for name in _HOOK_ARGS:
+        target = hooks / name
+        if target.exists() and _HOOK_MARK not in target.read_text("utf-8", errors="replace"):
+            # ⛔ Never overwrite somebody else's hook: merging two is a decision, not a default.
+            print(_ascii(f"NOT INSTALLED: {target} exists and was not written by this command. "
+                         f"Move it aside (or call `{python} -m kw_common.leakguard "
+                         f"{_HOOK_ARGS[name]}` from it), then install again."))
+            return 1
+    hooks.mkdir(parents=True, exist_ok=True)
+    for name in _HOOK_ARGS:
+        target = hooks / name
+        target.write_bytes(_hook_text(name, python).encode("utf-8"))
+        target.chmod(0o755)
+        print(_ascii(f"installed {target}"))
+    return check_hooks(root)
+
+
+def check_hooks(root: Path) -> int:
+    """0 only if git will run both hooks, and each will reach an interpreter that has the guard."""
+    hooks, why = _hooks_dir(root)
+    if hooks is None:
+        print(_ascii(f"HOOKS NOT ACTIVE: {why}"))
+        return 1
+    bad: list[str] = []
+    for name in _HOOK_ARGS:
+        target = hooks / name
+        text = target.read_text("utf-8", errors="replace") if target.is_file() else ""
+        python = re.search(r'^exec "([^"]+)" -m kw_common\.leakguard ', text, re.MULTILINE)
+        if _HOOK_MARK not in text or python is None:
+            bad.append(f"{name}: not installed by --install-hooks ({target})")
+            continue
+        try:
+            imports = subprocess.run([python.group(1), "-c", "import kw_common.leakguard"],
+                                     capture_output=True, timeout=_GIT_TIMEOUT_S).returncode == 0
+        except OSError:
+            imports = False
+        if not imports:
+            bad.append(f"{name}: {python.group(1)} cannot import kw_common.leakguard")
+    if bad:
+        print("HOOKS NOT ACTIVE - run `kw-leak-guard --install-hooks`:")
+        for b in bad:
+            print("  " + _ascii(b))
+        return 1
+    print(_ascii(f"hooks active: pre-commit and pre-push in {hooks}"))
+    return 0
+
+
+def _pre_commit(root: Path, compiled: list[tuple[str, re.Pattern[str]]]) -> int:
+    """The tree scan, then the index scan — both always run, so both verdicts are printed."""
+    tree = _scan_tree(root, compiled)
+    return max(tree, _scan_staged(root, compiled))
+
+
+def _pre_push(root: Path, remote: str, refs: str,
+              compiled: list[tuple[str, re.Pattern[str]]]) -> int:
+    """Range-scan every ref git says this push publishes (`<local ref> <local sha> <remote ref>
+    <remote sha>` per line on stdin).
+
+    A deletion (all-zero local sha) publishes nothing. A ref the remote does not have yet is
+    scanned as `<sha> --not --remotes=<remote>` — diffing it against nothing would scan zero
+    commits — and with no remote named, its whole history. A line that is not four fields is a
+    refusal: a hook that cannot tell what a push publishes must not let it through.
+    """
+    worst = 0
+    for line in refs.splitlines():
+        fields = line.split()
+        if not fields:
+            continue
+        if len(fields) != 4:
+            print(_ascii(f"pre-push REFUSED: cannot parse the ref line {line!r}"))
+            worst = 1
+            continue
+        _, local_sha, _, remote_sha = fields
+        if not local_sha.strip("0"):
+            continue
+        if remote_sha.strip("0"):
+            rev_range = f"{remote_sha}..{local_sha}"
+        else:
+            rev_range = f"{local_sha} --not --remotes={remote}" if remote else local_sha
+        worst = max(worst, _scan_commits(root, rev_range, compiled))
+    return worst
+
+
 def repo_root(start: str | None) -> Path:
     """The top level of the repository to scan, or a `UsageError` saying why there is none.
 
@@ -3688,6 +3852,10 @@ def main(argv: list[str]) -> int:
         # and pointing `--repo` at the wrong directory is one (#12).
         print(f"{_ascii(str(exc))}\n\n{USAGE}", file=sys.stderr)
         return 2
+    if args.install_hooks:
+        return install_hooks(root)
+    if args.check_hooks:
+        return check_hooks(root)
     # ⛔ THE CONFIG IS LOADED AND APPLIED BEFORE ANY PATTERN IS COMPILED FOR A SCAN. Both steps
     # can refuse — an unreadable or self-defeating config exits 2 rather than scanning under
     # rules nobody chose. `compile_patterns()` is called AFTER `apply_config` because a scan must
@@ -3703,6 +3871,11 @@ def main(argv: list[str]) -> int:
         return _scan_commits(root, args.rev_range, compiled)
     if args.staged:
         return _scan_staged(root, compiled)
+    if args.pre_commit:
+        return _pre_commit(root, compiled)
+    if args.pre_push is not None:
+        # git's ref list arrives on stdin; read in full before any scan runs.
+        return _pre_push(root, args.pre_push, sys.stdin.read(), compiled)
     return _scan_tree(root, compiled)
 
 

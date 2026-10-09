@@ -98,7 +98,9 @@ jobs:
           range=""
           count=0
           if [ -n "$base" ]; then
-            range="${base}..${target}"
+            # The base PEELED to its commit: a bare tag name in the range would re-scan the
+            # previous release's annotation, which this tag does not publish.
+            range="${base}^{commit}..${target}"
             count="$(git rev-list --count "$range")"
           fi
           if [ "$count" -eq 0 ]; then
