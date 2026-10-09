@@ -227,7 +227,8 @@ USAGE
 
     As a pre-commit + pre-push hook: `kw-leak-guard --install-hooks` writes both into the
     repository's git directory (see the hooks section near the end of this file), and refuses
-    while `core.hooksPath` is set, because a hooks path inside the working tree is a hook a
+    while `core.hooksPath` is set to any value, empty included, so git does not run hooks from
+    this repository's git directory. A hooks path inside the working tree is also a hook a
     checkout can remove (#17).
 
 IF IT FIRES ON SOMETHING LEGITIMATE
