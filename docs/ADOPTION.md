@@ -134,11 +134,13 @@ guards or none.
    `python -I -m kw_common.leakguard --pre-commit` / `--pre-push "$1"` from them instead; git runs
    only one hooks directory.
 4. Replace the CI steps that ran the fork with the CI job.
-5. History still contains the fork's synthetic deny corpus. Pull requests, pushes and tags with a
-   previous `v[0-9]*` tag scan only new commits and never see it; a whole-history scan (a
-   repository's first-ever `v*` tag, a manual run) reports it. Run the first release after the
-   migration from a repository that already has a `v*` tag, or expect that one run to need
-   review.
+5. History still contains the fork's synthetic deny corpus. Pull requests, pushes to an existing
+   branch, new branches compared with the default branch, and tags with a previous `v[0-9]*` tag
+   scan only new commits and never see it. A whole-history scan reports it: a repository's
+   first-ever `v*` tag, a manual or scheduled run, the default branch's own first push, and a new
+   branch when the default branch is not available to compare against. Run the first release
+   after the migration from a repository that already has a `v*` tag, or expect such a run to
+   need review.
 
 ## Verifying an adoption
 

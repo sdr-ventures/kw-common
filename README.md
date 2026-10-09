@@ -431,9 +431,12 @@ kw-leak-guard --check-hooks     # exit 0 only if git will run both
 Both hooks go into the repository's git directory, which no checkout removes and every linked
 worktree shares, and each `exec`s the interpreter that installed it — remove that interpreter or
 the package and the hook *fails*, so git refuses the commit or push instead of skipping the check.
-`--install-hooks` refuses while `core.hooksPath` is set (git would ignore the hooks) and never
-overwrites a hook it did not write. [`docs/ADOPTION.md`](docs/ADOPTION.md) is the full migration
-for each kind of repository.
+`--install-hooks` refuses while `core.hooksPath` is set — an empty value too, which turns every
+hook off — and never overwrites a hook it did not write. The hooks run the interpreter isolated
+(`-I`), so a `kw_common/` directory in the repository cannot stand in for the guard; install the
+pin into a virtual environment, not with `pip install --user`. A push of a tag that points at a
+blob or a tree is refused, because no scan reads that content.
+[`docs/ADOPTION.md`](docs/ADOPTION.md) is the full migration for each kind of repository.
 
 ### This repository is PUBLIC
 

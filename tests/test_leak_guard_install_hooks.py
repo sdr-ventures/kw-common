@@ -330,3 +330,22 @@ def test_check_FAILS_on_a_shim_EDITED_after_install(tmp_path: Path) -> None:
         hook.write_bytes(edited.encode())
         res = _guard(repo, "--check-hooks")
         assert res.returncode == 1 and "not exactly as --install-hooks" in res.stdout, res.stdout
+
+
+@pytest.mark.timeout(300)
+def test_check_FAILS_on_a_shim_whose_exec_line_a_lone_CR_folded_into_a_comment(
+    tmp_path: Path,
+) -> None:
+    """To `sh` a lone CR is an ordinary character, so the `exec` line joins the comment above it
+    and the hook runs nothing — while universal-newline text reading saw the original shim."""
+    repo = _repo(tmp_path)
+    assert _guard(repo, "--install-hooks").returncode == 0
+    hook = _hooks(repo) / "pre-commit"
+    raw = hook.read_bytes()
+    i = raw.index(b"\nexec ")
+    hook.write_bytes(raw[:i] + b"\r" + raw[i + 1:])
+    (repo / "l.txt").write_bytes(f"AGENT={_ADDR}\n".encode())
+    _git(repo, "add", "l.txt")
+    assert _git(repo, "commit", "-qm", "x", check=False).returncode == 0, "premise: a no-op hook"
+    res = _guard(repo, "--check-hooks")
+    assert res.returncode == 1 and "not exactly as --install-hooks" in res.stdout, res.stdout

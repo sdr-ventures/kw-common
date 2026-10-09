@@ -225,9 +225,10 @@ USAGE
 
     `python -m kw_common.leakguard ...` is identical and equally supported.
 
-    As a pre-commit + pre-push hook, a repository points `core.hooksPath` at its own hooks and
-    calls the command above. The hooks are the CONSUMER's, not this package's: they are how a
-    repository wires the guard up, and they differ per repository.
+    As a pre-commit + pre-push hook: `kw-leak-guard --install-hooks` writes both into the
+    repository's git directory (see the hooks section near the end of this file), and refuses
+    while `core.hooksPath` is set, because a hooks path inside the working tree is a hook a
+    checkout can remove (#17).
 
 IF IT FIRES ON SOMETHING LEGITIMATE
     Add the exact literal to `allow_literals` in the SCANNED REPOSITORY's `.leakguard.json`, with
@@ -3703,7 +3704,7 @@ def _scan_commits(root: Path, rev_range: str,
 #
 # So `--install-hooks` writes them into the repository's own git directory (`git rev-parse
 # --git-path hooks`), which no checkout touches and every linked worktree shares, and REFUSES while
-# `core.hooksPath` is set at any scope (git would ignore that directory). Each hook is a two-line
+# `core.hooksPath` is set at any scope (git would ignore that directory). Each hook is a four-line
 # shim that `exec`s the interpreter which installed it: if that interpreter or this package is
 # later removed, the hook FAILS and git refuses the commit or push — loud, never a silent pass.
 # `--check-hooks` answers "will git run them" for a setup script or an adoption check, and CI runs
@@ -3785,10 +3786,14 @@ def check_hooks(root: Path) -> int:
     bad: list[str] = []
     for name in _HOOK_ARGS:
         target = hooks / name
-        text = target.read_text("utf-8", errors="replace") if target.is_file() else ""
+        # ⛔ BYTES, not `read_text`: universal newlines would read a lone CR as `\n`, and to `sh` a
+        # CR is an ordinary character — the `exec` line folded into the comment above it runs
+        # nothing, while a text comparison called the shim intact.
+        raw = target.read_bytes() if target.is_file() else b""
+        text = raw.decode("utf-8", errors="replace")
         found = _SHIM_EXEC.search(text)
         python = found.group(1).replace("'\"'\"'", "'") if found else ""
-        if not found or text != _hook_text(name, python):
+        if not found or raw != _hook_text(name, python).encode("utf-8"):
             bad.append(f"{name}: not exactly as --install-hooks writes it ({target})")
             continue
         if os.name != "nt" and not os.access(target, os.X_OK):
