@@ -334,6 +334,46 @@ def test_two_NON_UTF8_paths_that_decode_alike_are_never_vouched_for_by_the_wrong
     assert proc.returncode == 1, f"a leak behind a colliding path scanned clean: {proc.stdout}"
 
 
+def _index_only(repo: Path, entries: list[tuple[bytes, bytes, str]]) -> None:
+    """Write (mode, raw path, content-or-sha) entries straight into the index — names Windows
+    cannot create, and modes no checkout produces."""
+    info = b""
+    for mode, path, content in entries:
+        sha = content if mode == b"160000" else subprocess.run(
+            ["git", "hash-object", "-w", "--stdin"], cwd=repo, input=content.encode(),
+            capture_output=True, check=True).stdout.decode().strip()
+        info += mode + b" " + sha.encode() + b"\t" + path + b"\0"
+    subprocess.run(["git", "update-index", "-z", "--add", "--index-info"], cwd=repo, input=info,
+                   capture_output=True, check=True)
+
+
+@pytest.mark.timeout(300)
+def test_a_GITLINK_whose_name_collides_cannot_make_a_leaking_file_look_like_a_submodule(
+    tmp_path: Path,
+) -> None:
+    """The mode is taken from the LAST entry under a decoded key, so a gitlink listed after a
+    leaking file (`\\xff` sorts after `\\xfe`) used to skip that file as a submodule, exit 0."""
+    repo = tmp_path / "gitlink"
+    _init(repo)
+    _index_only(repo, [(b"100644", b"x\xfe.txt", f"AGENT={_ADDR}\n"),
+                       (b"160000", b"x\xff.txt", "e" * 40)])
+    proc = _cli(repo)
+    assert proc.returncode == 1, f"a leak hidden behind a colliding gitlink: {proc.stdout}"
+
+
+@pytest.mark.timeout(300)
+def test_a_LONE_non_utf8_path_is_still_read_and_scanned(tmp_path: Path) -> None:
+    """Only a SHARED key loses its SHA. A single non-UTF-8 name (ordinary on Linux) is read from
+    the index by its own SHA: clean passes, a leak is found at its line."""
+    repo = tmp_path / "lone"
+    _init(repo)
+    _index_only(repo, [(b"100644", b"caf\xe9.txt", "clean\n")])
+    assert _cli(repo).returncode == 0, _cli(repo).stdout
+    _index_only(repo, [(b"100644", b"caf\xe9.txt", f"ok\nAGENT={_ADDR}\n")])
+    proc = _cli(repo)
+    assert proc.returncode == 1 and ":2: private IPv4 (RFC1918)" in proc.stdout, proc.stdout
+
+
 def test_the_batch_reader_cannot_be_shifted_by_a_missing_or_non_blob_answer(
     tmp_path: Path,
 ) -> None:

@@ -106,7 +106,10 @@ KNOWN LIMITS (state them; do not pretend to coverage)
         hex-and-colon runs cannot tell a `<word>:` prefix from one more hextet: an address straight
         after a colon (`--add-host db:<ula>`, SPF `ip6:<ula>`), and a six-hextet form ending in an
         embedded IPv4 (`<ula-prefix>:1:2:3:4:5:<v4>`, whose v4 half is judged alone).
-      * THE TREE SCAN READS THE WORKTREE, and that is still true — but it is no longer a GAP,
+      * THE TREE SCAN READS THE WORKTREE — except for a file with a `working-tree-encoding`
+        attribute whose checkout is NUL-bearing, where it reads the INDEX blob (#31), so an
+        unstaged edit to such a file is seen only once it is added. Otherwise that is still true
+        — but it is no longer a GAP,
         because it is no longer the only thing the commit-time layer runs. `git add cfg.txt` while
         it holds a leak, then overwrite cfg.txt with a clean version and do not re-stage: the tree
         scan is honestly clean and the index — and so the commit — still carries the leak (issue
@@ -1390,7 +1393,8 @@ def _index_entries(root: Path) -> dict[str, tuple[str, str]]:
 
     Shared by the submodule filter, the symlink branch of the tree scan and the batched read of
     staged-but-absent files, so all three read one listing rather than three. The SHA is `""` for
-    an UNMERGED path: it has no stage-0 entry, so there is no single blob a commit would record.
+    an UNMERGED path (no stage-0 entry, so no single blob a commit would record) and for a key two
+    entries share once decoded (see the loop).
     """
     out = subprocess.run(["git", "ls-files", "-s", "-z"], cwd=root, capture_output=True,
                          check=True, timeout=_GIT_TIMEOUT_S)
@@ -1398,19 +1402,18 @@ def _index_entries(root: Path) -> dict[str, tuple[str, str]]:
     for raw in out.stdout.split(b"\0"):
         if not raw:
             continue
-        # ⛔ A PATH THAT IS NOT VALID UTF-8 GETS NO SHA. Decoded with `errors="replace"`, two
-        # different byte paths (`a\xfe.txt`, `a\xff.txt`) become ONE key, and the batched read of
-        # an absent file then scanned whichever blob was listed last under the other's name — a
-        # committed leak exited 0. No SHA means the file is reported unreadable: fail closed.
-        try:
-            entry, exact = raw.decode("utf-8"), True
-        except UnicodeDecodeError:
-            entry, exact = raw.decode("utf-8", errors="replace"), False
+        # ⛔ A DECODED KEY THAT TWO INDEX ENTRIES SHARE GETS NO SHA AND NO MODE. Decoded with
+        # `errors="replace"`, two different byte paths (`a\xfe.txt`, `a\xff.txt`, or one of them
+        # and a valid path holding U+FFFD) become ONE key: the batched read of an absent file
+        # then scanned whichever blob was listed last under the other's name, and a gitlink mode
+        # listed last made a leaking file look like a submodule. Either way a committed leak
+        # exited 0. No SHA and no mode means the file is reported unreadable: fail closed. A
+        # non-UTF-8 path that collides with nothing keeps both, so it is still read and scanned.
+        entry = raw.decode("utf-8", errors="replace")
         meta, _, path = entry.partition("\t")
         mode, sha, stage = ([*meta.split(" "), "", ""])[:3]
-        # A second stage-0 entry under one decoded key is the same collision, whichever came first.
         collided = stage == "0" and path in entries
-        entries[path] = (mode, sha if stage == "0" and exact and not collided else "")
+        entries[path] = ("", "") if collided else (mode, sha if stage == "0" else "")
     return entries
 
 
@@ -3306,8 +3309,8 @@ def _scan_tree(root: Path, compiled: list[tuple[str, re.Pattern[str]]]) -> int:
             # ⚠️ DO NOT NAME A CAUSE THIS DOES NOT KNOW: name the possibilities instead.
             undecodable.append(
                 f"{rel} (absent from the worktree, and git could not serve its staged content: "
-                f"an unmerged path with no stage-0 entry, a path that is not valid UTF-8, or an "
-                f"index entry whose object is missing)")
+                f"an unmerged path with no stage-0 entry, two index paths that decode to this one "
+                f"name, or an index entry whose object is missing or is not a blob)")
             continue
         consume(rel, blob, True)
 
@@ -3403,8 +3406,8 @@ def staged_blob(root: Path, rel: str) -> bytes | None:
     remedy that was inert because `.png` was already in SKIP_SUFFIXES. Handing the caller the bytes
     lets ONE rule decide "is this an asset", for the worktree read and the staged blob alike.
 
-    None now means only that git refused the path — in practice an UNMERGED path, which has no
-    stage-0 entry.
+    None now means only that git refused the path — an UNMERGED path, which has no stage-0 entry,
+    or a name that is not the index's own (a non-UTF-8 path arrives here decoded).
 
     ⛔⛔ `:0:<path>`, NOT `:<path>` — THE STAGE PREFIX IS WHAT MAKES THE REST A PATH (consumer
     PR99). `:<rev>` is a git REVISION expression, and `:0:`/`:1:`/`:2:`/`:3:` inside one name a
@@ -3434,7 +3437,8 @@ def staged_blob(root: Path, rel: str) -> bytes | None:
 def _staged_blobs(root: Path, shas: list[str]) -> list[bytes | None]:
     """The bytes of each BLOB SHA, in order, from ONE `git cat-file --batch` (consumer#239).
 
-    `None` for an empty SHA (an unmerged path: no stage-0 entry), a missing object, or anything
+    `None` for an empty SHA (an unmerged or a colliding path — `_index_entries`), a missing
+    object, or anything
     that is not a blob.
 
     ⛔⛔ WHY THIS BATCH CANNOT DESYNCHRONISE, when the one removed before it did. That one asked for
