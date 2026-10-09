@@ -48,8 +48,8 @@ jobs:
           VERSION: ${{ inputs.version }}
         run: |
           set -eu
-          if ! printf '%s\n' "$VERSION" \
-              | grep -Eqx 'v[0-9]+\.[0-9]+\.[0-9]+(rc[0-9]+)?|[0-9a-f]{40}'; then
+          # The WHOLE string, not any line of it: a multi-line value passed a per-line grep.
+          if ! [[ "$VERSION" =~ ^(v[0-9]+\.[0-9]+\.[0-9]+(rc[1-9][0-9]*)?|[0-9a-f]{40})$ ]]; then
             echo "::error::version '${VERSION}' is not a release tag (vX.Y.Z, vX.Y.ZrcN) or a"
             echo "::error::full commit SHA. A branch name moves under you; pin something that"
             echo "::error::cannot."
@@ -83,6 +83,7 @@ jobs:
           PR_HEAD: ${{ github.event.pull_request.head.sha }}
           PUSH_BEFORE: ${{ github.event.before }}
           HEAD_SHA: ${{ github.sha }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           set -eu
           z40=0000000000000000000000000000000000000000
@@ -107,12 +108,15 @@ jobs:
               fi ;;
             push:*)
               if [ -z "$PUSH_BEFORE" ] || [ "$PUSH_BEFORE" = "$z40" ]; then
-                # A branch created by this push has no previous tip; scan it from its parent
-                # rather than reporting an empty range as clean.
-                if git rev-parse --verify -q "${HEAD_SHA}^" >/dev/null; then
-                  range="${HEAD_SHA}^..${HEAD_SHA}"
-                else
-                  range="$HEAD_SHA"
+                # ⛔ A branch created by this push publishes EVERY commit the default branch does
+                # not have, not just its tip: a leak added and removed on it would otherwise pass.
+                # Scan from the default branch; without one to compare against — or when this IS
+                # the default branch's first push, which publishes everything — all history.
+                default="refs/remotes/origin/${DEFAULT_BRANCH:-}"
+                range="$HEAD_SHA"
+                if [ -n "${DEFAULT_BRANCH:-}" ] && [ "$REF" != "refs/heads/${DEFAULT_BRANCH}" ] \
+                    && git rev-parse --verify -q "$default" >/dev/null; then
+                  range="${default}..${HEAD_SHA}"
                 fi
               else
                 range="${PUSH_BEFORE}..${HEAD_SHA}"

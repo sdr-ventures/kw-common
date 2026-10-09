@@ -54,8 +54,14 @@ kw-leak-guard --install-hooks
 publishes. Both live in the git directory, so no checkout removes them and every linked worktree
 shares them. Each calls the interpreter that installed it: delete that environment and the hooks
 **fail** (git refuses the commit or push) rather than silently skipping — re-run
-`--install-hooks` from the new environment. The command refuses while `core.hooksPath` is set and
-never overwrites a hook it did not write.
+`--install-hooks` from the new environment. The command refuses while `core.hooksPath` is set (an
+empty value too: it turns every hook off) and never overwrites a hook it did not write.
+
+The hooks run the interpreter in isolated mode (`-I`), so a `kw_common/` directory in the
+repository can never stand in for the guard. Install the pin into a virtual environment, not with
+`pip install --user` — isolated mode does not read the user site.
+
+A push of a tag that points at a blob or a tree is refused: no scan reads that content.
 
 ### Allowances
 
@@ -125,7 +131,7 @@ guards or none.
    ```
 
    If `.githooks/` also holds hooks unrelated to the guard, keep them and call
-   `python -m kw_common.leakguard --pre-commit` / `--pre-push "$1"` from them instead; git runs
+   `python -I -m kw_common.leakguard --pre-commit` / `--pre-push "$1"` from them instead; git runs
    only one hooks directory.
 4. Replace the CI steps that ran the fork with the CI job.
 5. History still contains the fork's synthetic deny corpus. Pull requests, pushes and tags with a
@@ -144,7 +150,7 @@ kw-leak-guard --selftest                                     # selftest ok
 kw-leak-guard                                                # no internal info found
 kw-leak-guard --range origin/main..HEAD                      # no internal info added
 kw-leak-guard --check-hooks                                  # hooks active
-git config --get core.hooksPath                              # prints nothing
+git config --get core.hooksPath; echo $?                     # exit 1 (empty counts as set)
 git ls-files | grep -ci check_no_internal_info               # 0
 ```
 

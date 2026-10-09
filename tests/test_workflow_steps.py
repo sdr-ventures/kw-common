@@ -139,7 +139,7 @@ def _scan_step(repo: Path, **env: str) -> tuple[int, str]:
     """Run 'Scan what this event publishes' in `repo`, with `kw-leak-guard` on PATH."""
     script = step_script(REUSABLE, "Scan what this event publishes")
     full = {**os.environ, "EVENT": "", "REF": "", "PR_BASE": "", "PR_HEAD": "",
-            "PUSH_BEFORE": "", "HEAD_SHA": "", **env,
+            "PUSH_BEFORE": "", "HEAD_SHA": "", "DEFAULT_BRANCH": "", **env,
             "PATH": os.path.dirname(sys.executable) + os.pathsep + os.environ.get("PATH", "")}
     assert BASH is not None
     proc = subprocess.run([BASH, "-c", script], cwd=repo, env=full, capture_output=True,
@@ -205,17 +205,38 @@ def test_a_PULL_REQUEST_and_a_PUSH_scan_exactly_their_new_commits(tmp_path: Path
     code, out = _scan_step(repo, EVENT="push", REF="refs/heads/main", PUSH_BEFORE=leaky,
                            HEAD_SHA=clean)
     assert code == 0 and f"range: {leaky}..{clean}" in out, out
-    code, out = _scan_step(repo, EVENT="push", REF="refs/heads/new", PUSH_BEFORE="0" * 40,
-                           HEAD_SHA=leaky)
-    assert code == 1 and f"range: {leaky}^..{leaky}" in out, out
     code, out = _scan_step(repo, EVENT="workflow_dispatch", REF="refs/heads/main",
                            HEAD_SHA=clean)
     assert code == 1 and f"range: {clean}\n" in out, out
 
 
 @needs_bash
+@pytest.mark.timeout(300)
+def test_a_NEW_BRANCH_is_scanned_from_the_default_branch_not_only_its_tip(tmp_path: Path) -> None:
+    """A branch whose first commit adds a leak and whose second removes it: the tip alone is
+    clean, the push publishes both. Scanned from the remote default branch it is caught."""
+    repo = tmp_path / "newbranch"
+    repo.mkdir()
+    _g(repo, "init", "-q")
+    base = _commit(repo, "a.md", "clean\n")
+    _g(repo, "update-ref", "refs/remotes/origin/main", base)
+    _commit(repo, "b.md", f"AGENT={_ADDR}\n")
+    tip = _commit(repo, "b.md", "clean\n")
+    new = {"EVENT": "push", "REF": "refs/heads/feature", "PUSH_BEFORE": "0" * 40,
+           "HEAD_SHA": tip}
+
+    code, out = _scan_step(repo, **new, DEFAULT_BRANCH="main")
+    assert code == 1 and f"range: refs/remotes/origin/main..{tip}" in out, out
+    # No default branch to compare against, or the default branch's own first push: everything.
+    code, out = _scan_step(repo, **new)
+    assert code == 1 and f"range: {tip}\n" in out, out
+    code, out = _scan_step(repo, **{**new, "REF": "refs/heads/main"}, DEFAULT_BRANCH="main")
+    assert code == 1 and f"range: {tip}\n" in out, out
+
+
+@needs_bash
 @pytest.mark.parametrize("version", ["main", "v1.7", "1.7.0", "abc1234", "v1.7.0-rc1",
-                                     "v1.7.0; echo pwned"])
+                                     "v1.7.0; echo pwned", "v1.7.0\nmain", "v1.7.0rc0"])
 def test_the_install_step_refuses_a_pin_that_can_move_or_is_malformed(tmp_path: Path,
                                                                       version: str) -> None:
     script = step_script(REUSABLE, "Install the pinned guard")

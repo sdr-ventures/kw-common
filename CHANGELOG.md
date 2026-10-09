@@ -50,12 +50,15 @@ Markdown emphasis around a real host is the same string. Allow the literal in `.
 
 * **A reusable workflow**, `.github/workflows/leak-guard.yml` (`workflow_call`, input `version`):
   the self-test, the tree scan and the range scan of what the event publishes — for a tag, the
-  commits since the previous `v[0-9]*` tag and the tag object. One job id gives every repository
-  the same required check: `leak-guard / No internal info (leak guard)`.
+  commits since the previous `v[0-9]*` tag and the tag object; for a new branch, everything the
+  default branch does not have. One job id gives every repository the same required check:
+  `leak-guard / No internal info (leak guard)`.
 * **Hooks the package installs** (`#17`): `kw-leak-guard --install-hooks` writes a pre-commit and a
   pre-push shim into the git directory, where no checkout removes them; `--check-hooks` says
   whether git will run them; `--pre-commit` and `--pre-push <remote>` are what they call. A shim
-  whose interpreter is gone fails rather than skipping. This repository's own pre-push hook is now
+  whose interpreter is gone fails rather than skipping; it runs isolated (`-I`), so a repository
+  cannot shadow the guard with its own `kw_common/`; an empty `core.hooksPath` is refused; a push
+  of a tag on a blob or tree is refused. This repository's own pre-push hook is now
   installed the same way (copied into the git directory), not through a relative
   `core.hooksPath`.
 * **A tag range no longer re-reads the previous release's annotation.** `release.yml` and the

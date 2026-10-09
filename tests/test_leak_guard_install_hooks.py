@@ -10,6 +10,7 @@ Python entry points directly would pass on a hook git never invokes.
 
 from __future__ import annotations
 
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -232,14 +233,100 @@ def test_an_unparseable_ref_line_is_a_refusal(tmp_path: Path,
     assert "cannot parse" in capsys.readouterr().out
 
 
-@pytest.mark.parametrize("argv", [
-    ["--pre-commit", "--staged"],
-    ["--install-hooks", "--check-hooks"],
-    ["--pre-push", "origin", "--range", "A..B"],
-    ["--install-hooks", "--config", "x.json"],
-    ["--check-hooks", "--help"],
-    ["--pre-push"],
+@pytest.mark.parametrize("argv,says", [
+    (["--pre-commit", "--staged"], "do different things"),
+    (["--install-hooks", "--check-hooks"], "do different things"),
+    (["--pre-push", "origin", "--range", "A..B"], "do different things"),
+    (["--install-hooks", "--config", "x.json"], "--config would be ignored"),
+    (["--check-hooks", "--help"], "--help does not combine"),
+    (["--pre-push"], "--pre-push needs a value"),
 ])
-def test_the_new_modes_are_exclusive_and_strict(argv: list[str]) -> None:
-    with pytest.raises(guard.UsageError):
+def test_the_new_modes_are_exclusive_and_strict(argv: list[str], says: str) -> None:
+    """Each refusal for its OWN reason — an unknown flag would also raise, which proves nothing."""
+    with pytest.raises(guard.UsageError, match=re.escape(says)):
         guard.parse_args(argv)
+    assert guard.parse_args(argv[:1] + (["origin"] if argv[0] == "--pre-push" else []))
+
+
+@pytest.mark.timeout(300)
+def test_an_EMPTY_core_hooksPath_turns_hooks_off_and_is_refused(tmp_path: Path) -> None:
+    """`core.hooksPath=` (empty) at any scope runs NO hooks, and `--git-path hooks` then answers
+    the worktree root. It is a setting like any other, not "unset"."""
+    repo = _repo(tmp_path)
+    _git(repo, "config", "core.hooksPath", "")
+    res = _guard(repo, "--install-hooks")
+    assert res.returncode == 1 and "core.hooksPath is set" in res.stdout, res.stdout
+    assert not (repo / "pre-commit").exists(), "the shims were written into the worktree"
+    assert _guard(repo, "--check-hooks").returncode == 1
+
+
+@pytest.mark.timeout(300)
+def test_a_kw_common_package_in_the_REPOSITORY_cannot_replace_the_guard(tmp_path: Path) -> None:
+    """Hooks run from the worktree root, and `python -m` puts the current directory first on
+    `sys.path`. The shim runs isolated (`-I`), so a committed `kw_common/` is never imported."""
+    repo = _repo(tmp_path)
+    assert _guard(repo, "--install-hooks").returncode == 0
+    (repo / "kw_common").mkdir()
+    (repo / "kw_common" / "__init__.py").write_bytes(b"")
+    (repo / "kw_common" / "leakguard.py").write_bytes(b"import sys\nprint('shadow')\nsys.exit(0)\n")
+    _git(repo, "add", "kw_common")
+    _git(repo, "-c", "core.hooksPath=/nonexistent", "commit", "-qm", "shadow package")
+    (repo / "l.txt").write_bytes(f"AGENT={_ADDR}\n".encode())
+    _git(repo, "add", "l.txt")
+    res = _git(repo, "commit", "-m", "leak", check=False)
+    assert res.returncode != 0 and "shadow" not in res.stdout + res.stderr, res.stdout
+    assert _guard(repo, "--check-hooks").returncode == 0
+
+
+@pytest.mark.timeout(300)
+def test_a_TAG_on_a_BLOB_or_TREE_is_refused_on_push(tmp_path: Path) -> None:
+    """A range scan walks commits, so content a tag publishes directly is read by nothing."""
+    repo, remote = _with_remote(tmp_path)
+    blob = subprocess.run(["git", "hash-object", "-w", "--stdin"], cwd=repo,
+                          input=f"AGENT={_ADDR}\n".encode(), capture_output=True,
+                          check=True).stdout.decode().strip()
+    tree = subprocess.run(["git", "mktree"], cwd=repo, input=f"100644 blob {blob}\tf\n".encode(),
+                          capture_output=True, check=True).stdout.decode().strip()
+    for name, target in (("blobtag", blob), ("treetag", tree)):
+        _git(repo, "tag", name, target)
+        res = _git(repo, "push", "origin", name, check=False)
+        assert res.returncode != 0 and "not a commit" in res.stdout + res.stderr, res.stderr
+        assert _remote_sha(remote, f"refs/tags/{name}") == ""
+
+
+@pytest.mark.timeout(300)
+def test_a_push_to_a_PATH_with_whitespace_still_scans_the_new_commits(tmp_path: Path) -> None:
+    """git hands the hook the URL when there is no remote name; split on whitespace it became
+    extra `--not <word>` revisions and excluded the leak."""
+    repo, _ = _with_remote(tmp_path)
+    spaced = tmp_path / "x feat"
+    subprocess.run(["git", "init", "-q", "--bare", str(spaced)], check=True, timeout=120)
+    _git(repo, "switch", "-q", "-c", "feat")
+    (repo / "l.txt").write_bytes(f"AGENT={_ADDR}\n".encode())
+    _git(repo, "add", "l.txt")
+    _git(repo, "-c", "core.hooksPath=/nonexistent", "commit", "-qm", "leak")
+    res = _git(repo, "push", str(spaced), "feat", check=False)
+    assert res.returncode != 0, res.stdout + res.stderr
+
+
+def test_the_shim_quotes_any_interpreter_path_and_check_reads_it_back(tmp_path: Path) -> None:
+    """`$`, a backtick and a quote in the interpreter path are literal to the hook's shell, and
+    `--check-hooks` recovers exactly that path from the shim."""
+    odd = "/opt/py$HOME/`id`/it's/python"
+    text = guard._hook_text("pre-commit", odd)
+    assert "exec '/opt/py$HOME/`id`/it'\"'\"'s/python' -I -m kw_common.leakguard" in text
+    found = guard._SHIM_EXEC.search(text)
+    assert found and found.group(1).replace("'\"'\"'", "'") == odd
+
+
+@pytest.mark.timeout(300)
+def test_check_FAILS_on_a_shim_EDITED_after_install(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    assert _guard(repo, "--install-hooks").returncode == 0
+    hook = _hooks(repo) / "pre-commit"
+    text = hook.read_text(encoding="utf-8")
+    for edited in (text.replace("#!/bin/sh\n", "#!/bin/sh\nexit 0\n"),
+                   text.replace("--pre-commit", "--selftest")):
+        hook.write_bytes(edited.encode())
+        res = _guard(repo, "--check-hooks")
+        assert res.returncode == 1 and "not exactly as --install-hooks" in res.stdout, res.stdout

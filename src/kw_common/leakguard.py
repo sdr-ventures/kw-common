@@ -3708,22 +3708,35 @@ _HOOK_MARK = "# installed by kw-leak-guard --install-hooks"
 _HOOK_ARGS = {"pre-commit": "--pre-commit", "pre-push": '--pre-push "$1"'}
 
 
+def _sh_quote(text: str) -> str:
+    """`text` as ONE single-quoted sh word: `$`, a backtick or `"` in an interpreter path must not
+    be expanded by the hook's shell."""
+    return "'" + text.replace("'", "'\"'\"'") + "'"
+
+
 def _hook_text(name: str, python: str) -> str:
+    # ⛔ `-I`, ISOLATED MODE: git runs a hook from the worktree root, and `-m` would otherwise put
+    # that directory first on `sys.path` — so a `kw_common/` package committed to the repository
+    # would REPLACE the guard and run on every commit. Isolated mode also ignores `PYTHON*`
+    # variables and the user site, so the package must be installed in the interpreter's own
+    # environment (a venv), which is how `--install-hooks` is meant to be run.
     return (f"#!/bin/sh\n{_HOOK_MARK} - re-run it to update this file.\n"
             f"# Fails closed: if the interpreter below is gone, git refuses the {name}.\n"
-            f'exec "{python}" -m kw_common.leakguard {_HOOK_ARGS[name]}\n')
+            f"exec {_sh_quote(python)} -I -m kw_common.leakguard {_HOOK_ARGS[name]}\n")
 
 
 def _hooks_dir(root: Path) -> tuple[Path | None, str]:
     """(the directory git runs this repository's hooks from, "") — or (None, why not)."""
+    # ⛔ THE EXIT CODE, NOT THE VALUE: `core.hooksPath` set to an EMPTY string at any scope turns
+    # every hook off, and `--git-path hooks` then answers the worktree root. A blank value is set.
     configured = subprocess.run(["git", "config", "--get", "core.hooksPath"], cwd=root,
-                                capture_output=True, text=True, timeout=_GIT_TIMEOUT_S).stdout
-    if configured.strip():
-        return None, (f"core.hooksPath is set ({configured.strip()!r}), so git runs hooks from "
-                      f"there and not from this repository's git directory. If it points into the "
-                      f"working tree it is the #17 trap: a checkout can remove it. Remove the "
-                      f"setting with `git config --unset core.hooksPath` (add --global if that is "
-                      f"where it is), then install again.")
+                                capture_output=True, text=True, timeout=_GIT_TIMEOUT_S)
+    if configured.returncode == 0:
+        return None, (f"core.hooksPath is set ({configured.stdout.strip()!r}), so git does not "
+                      f"run hooks from this repository's git directory (an EMPTY value runs none "
+                      f"at all). If it points into the working tree it is the #17 trap: a "
+                      f"checkout can remove it. Remove the setting with `git config --unset "
+                      f"core.hooksPath` (add --global if that is where it is), then install again.")
     hooks = Path(_git(root, "rev-parse", "--git-path", "hooks").strip())
     return (hooks if hooks.is_absolute() else root / hooks).resolve(), ""
 
@@ -3742,7 +3755,7 @@ def install_hooks(root: Path) -> int:
         if target.exists() and _HOOK_MARK not in target.read_text("utf-8", errors="replace"):
             # ⛔ Never overwrite somebody else's hook: merging two is a decision, not a default.
             print(_ascii(f"NOT INSTALLED: {target} exists and was not written by this command. "
-                         f"Move it aside (or call `{python} -m kw_common.leakguard "
+                         f"Move it aside (or call `{python} -I -m kw_common.leakguard "
                          f"{_HOOK_ARGS[name]}` from it), then install again."))
             return 1
     hooks.mkdir(parents=True, exist_ok=True)
@@ -3754,8 +3767,13 @@ def install_hooks(root: Path) -> int:
     return check_hooks(root)
 
 
+_SHIM_EXEC = re.compile(r"^exec '((?:[^']|'\"'\"')*)' -I -m kw_common\.leakguard ", re.MULTILINE)
+
+
 def check_hooks(root: Path) -> int:
-    """0 only if git will run both hooks, and each will reach an interpreter that has the guard."""
+    """0 only if git will run both hooks EXACTLY as installed, and each reaches an interpreter
+    that has the guard. A shim edited after install (an `exit 0` added, a flag changed) is not
+    active: the file must be byte-for-byte what `--install-hooks` writes for its interpreter."""
     hooks, why = _hooks_dir(root)
     if hooks is None:
         print(_ascii(f"HOOKS NOT ACTIVE: {why}"))
@@ -3764,17 +3782,22 @@ def check_hooks(root: Path) -> int:
     for name in _HOOK_ARGS:
         target = hooks / name
         text = target.read_text("utf-8", errors="replace") if target.is_file() else ""
-        python = re.search(r'^exec "([^"]+)" -m kw_common\.leakguard ', text, re.MULTILINE)
-        if _HOOK_MARK not in text or python is None:
-            bad.append(f"{name}: not installed by --install-hooks ({target})")
+        found = _SHIM_EXEC.search(text)
+        python = found.group(1).replace("'\"'\"'", "'") if found else ""
+        if not found or text != _hook_text(name, python):
+            bad.append(f"{name}: not exactly as --install-hooks writes it ({target})")
+            continue
+        if os.name != "nt" and not os.access(target, os.X_OK):
+            bad.append(f"{name}: not executable, so git skips it ({target})")
             continue
         try:
-            imports = subprocess.run([python.group(1), "-c", "import kw_common.leakguard"],
-                                     capture_output=True, timeout=_GIT_TIMEOUT_S).returncode == 0
+            imports = subprocess.run([python, "-I", "-c", "import kw_common.leakguard"],
+                                     cwd=root, capture_output=True,
+                                     timeout=_GIT_TIMEOUT_S).returncode == 0
         except OSError:
             imports = False
         if not imports:
-            bad.append(f"{name}: {python.group(1)} cannot import kw_common.leakguard")
+            bad.append(f"{name}: {python} cannot import kw_common.leakguard")
     if bad:
         print("HOOKS NOT ACTIVE - run `kw-leak-guard --install-hooks`:")
         for b in bad:
@@ -3797,8 +3820,12 @@ def _pre_push(root: Path, remote: str, refs: str,
 
     A deletion (all-zero local sha) publishes nothing. A ref the remote does not have yet is
     scanned as `<sha> --not --remotes=<remote>` — diffing it against nothing would scan zero
-    commits — and with no remote named, its whole history. A line that is not four fields is a
-    refusal: a hook that cannot tell what a push publishes must not let it through.
+    commits — and with no plain remote NAME (none, or a URL or path with whitespace in it, which
+    would split into extra revision arguments), its whole history. A line that is not four
+    fields is a refusal: a hook that cannot tell what a push publishes must not let it through.
+
+    ⛔ A REF THAT DOES NOT PEEL TO A COMMIT IS REFUSED. A tag can point at a blob or a tree, and a
+    range scan walks commits — so the content it publishes is read by nothing.
     """
     worst = 0
     for line in refs.splitlines():
@@ -3809,13 +3836,24 @@ def _pre_push(root: Path, remote: str, refs: str,
             print(_ascii(f"pre-push REFUSED: cannot parse the ref line {line!r}"))
             worst = 1
             continue
-        _, local_sha, _, remote_sha = fields
+        local_ref, local_sha, _, remote_sha = fields
         if not local_sha.strip("0"):
+            continue
+        try:
+            kind = _git(root, "cat-file", "-t", f"{local_sha}^{{}}").strip()
+        except subprocess.CalledProcessError:
+            kind = "unreadable object"
+        if kind != "commit":
+            print(_ascii(f"pre-push REFUSED: {local_ref} publishes a {kind}, not a commit, and "
+                         f"no scan reads one. Push a tag that points at a commit."))
+            worst = 1
             continue
         if remote_sha.strip("0"):
             rev_range = f"{remote_sha}..{local_sha}"
+        elif remote and not any(c.isspace() for c in remote):
+            rev_range = f"{local_sha} --not --remotes={remote}"
         else:
-            rev_range = f"{local_sha} --not --remotes={remote}" if remote else local_sha
+            rev_range = local_sha
         worst = max(worst, _scan_commits(root, rev_range, compiled))
     return worst
 
