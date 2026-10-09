@@ -221,7 +221,7 @@ def test_a_tracked_symlink_is_scanned_as_its_link_text_not_its_target(tmp_path: 
     _link(repo, "link", Path("..") / _HOST / "notes.txt")
     res = _cli(repo)
     assert res.returncode == 1, _out(res)
-    assert f"link:1: private lan domain: {_HOST!r}" in _out(res), _out(res)
+    assert "link:1: private lan domain" in _out(res) and _HOST not in _out(res), _out(res)
 
     plain = tmp_path / "plain"
     plain.mkdir()
@@ -331,7 +331,8 @@ def test_an_svg_is_text_and_a_leak_inside_one_is_found(tmp_path: Path) -> None:
     _write(repo, "icon.svg", f'<svg><title>{_HOST}</title></svg>\n')
     _commit(repo, "icon")
     res = _cli(repo)
-    assert res.returncode == 1 and f"icon.svg:1: private lan domain: {_HOST!r}" in _out(res)
+    assert res.returncode == 1 and "icon.svg:1: private lan domain" in _out(res)
+    assert _HOST not in _out(res), "a finding printed the matched literal"
 
 
 def test_a_utf8_bom_does_not_hide_a_leak_on_the_first_line(tmp_path: Path) -> None:
@@ -591,8 +592,11 @@ def test_a_leak_in_a_FILENAME_reds_the_TREE_scan(tmp_path: Path) -> None:
     assert "<path>" in out, (
         f"the finding must say it is a PATH, not a line inside a file:\n{out}")
     # ⭐ BOTH plants, not just whichever one happens to fire first: a filename and a DIRECTORY name
-    # publish identically, and reporting only one would be half a scan.
-    assert f"{_ADDR}.conf" in out and f"docs/{_HOST}/notes.md" in out, out
+    # publish identically, and reporting only one would be half a scan. The path is printed with
+    # the matched span REDACTED to its shape, so the finding names the file without the value.
+    assert "<private IPv4 (RFC1918)>.conf: <path>" in out, out
+    assert "docs/<private lan domain>/notes.md: <path>" in out, out
+    assert _ADDR not in out and _HOST not in out, f"a finding printed the literal:\n{out}"
 
 
 def test_a_leak_in_a_PATH_is_scanned_REGARDLESS_of_its_suffix(tmp_path: Path) -> None:
@@ -1469,7 +1473,7 @@ def test_an_unstaged_rm_of_a_BINARY_ASSET_does_not_red(tmp_path: Path) -> None:
     res = _cli(repo)
     assert res.returncode == 1, (
         f"an absent .pdf whose staged blob is TEXT must still be scanned:\n{_out(res)}")
-    assert _HOST in _out(res), _out(res)
+    assert "notes.pdf:1: private lan domain" in _out(res), _out(res)
 
 
 # ===========================================================================================

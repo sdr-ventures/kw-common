@@ -9,6 +9,41 @@ exported symbol that changed. ⛔ It does NOT name the consumers that need a cod
 repository is public, and honouring that older promise would publish the fleet's inventory at
 exactly the moment the release notes are read most widely.
 
+## [1.7.0] - Unreleased
+
+**Makes the leak guard correct enough to be the one engine the fleet runs.** No name in any
+module's `__all__` was removed or changed in signature — MINOR.
+
+### Behaviour that changes what a scan reports
+
+* **Two new shapes** (consumer#245). `private IPv6 (ULA / link-local)` — unique-local (fc00/7) and
+  link-local (fe80/10) addresses, written in full or `::`-elided, bare or in a URL's brackets.
+  `home network domain (RFC 8375)` — a host under `.home.arpa`. Both apply to file content, paths,
+  commit messages and tags. RFC 3849's `2001:db8::/32` is the documented IPv6 placeholder and does
+  not fire; neither do the range bases written as ranges. A repository whose tests carry a
+  link-local or zero-ID unique-local literal will see a finding on bump: rewrite it to the RFC
+  3849 prefix.
+* **A finding no longer prints the matched value** — only the shape, the file and the line. Any
+  printed path, revision range or directory has its shapes redacted to `<label>`. The value used to
+  be republished in every CI log that reported it. Exit codes are unchanged.
+* **A `.gitignore` glob whose `*` follows `.local`/`.lan` directly** is no longer a finding
+  (consumer#237).
+
+### Fixes
+
+* `#31` — a file with a `working-tree-encoding` attribute is checked out NUL-bearing by design,
+  and a clean tree was refused as "not UTF-8 text". The tree scan now reads the index blob for it,
+  as the unraid-templates guard does; without the attribute the refusal stands.
+* unraid-templates#37 — a path holding a quote, a backslash or a control byte is C-quoted in the
+  `diff --git` header whatever `core.quotePath` says, and the range and staged scans refused every
+  such file. The header is decoded now; only a malformed header is still refused.
+* consumer#239 — the tree scan read each staged-but-absent file with its own `git cat-file`
+  (~74 ms each). They are read in one batch, by the index's blob SHA.
+* `is_shallow` treated a git that could not answer as a complete clone; anything but `false` is now
+  shallow, so the range scan refuses rather than scanning truncated history.
+* `#37` — the release workflow refused a `vX.Y.ZrcN` tag. It now publishes one as a pre-release
+  of `X.Y.Z`; any other tag must still equal `v<__version__>`.
+
 ## [1.6.3] - 2026-10-08
 
 **Stops ntfy dropping a long alert** (`#36`). ntfy answers HTTP 400 to a message body of about

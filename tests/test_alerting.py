@@ -4108,6 +4108,7 @@ def test_a_bracketed_ipv6_host_with_userinfo_is_refused_on_EVERY_interpreter(
 
 def test_an_ordinary_bracketed_ipv6_topic_is_still_READY() -> None:
     """The false-red direction. `https://[::1]/topic` and a port form are legitimate and are in
-    `READY_CORPUS`; a refusal that reached them would disable a working channel."""
-    for url in ("https://[::1]/topic", "https://[::1]:8443/topic", "https://[fe80::1]/t"):
+    `READY_CORPUS`; a refusal that reached them would disable a working channel. The non-loopback
+    case is RFC 3849's documentation prefix: a link-local literal is a leak-guard finding."""
+    for url in ("https://[::1]/topic", "https://[::1]:8443/topic", "https://[2001:db8::1]/t"):
         assert AlertConfig(ntfy_url=url).ntfy_ready() is True, url

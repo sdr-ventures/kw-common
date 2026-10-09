@@ -16,13 +16,13 @@ no port, no alignment audit, and no "which copy is the good one" question to ans
 Consumers install from git at an **exact tag** — never a branch:
 
 ```
-pip install git+https://github.com/texasdaddy/kw-common@v1.6.3
+pip install git+https://github.com/texasdaddy/kw-common@v1.7.0
 ```
 
 In a `requirements.in` / `requirements.txt`:
 
 ```
-kw-common @ git+https://github.com/texasdaddy/kw-common@v1.6.3
+kw-common @ git+https://github.com/texasdaddy/kw-common@v1.7.0
 ```
 
 ⛔ **Never pin a branch.** `@main` makes every rebuild of every consumer a silent, unreviewed
@@ -257,6 +257,11 @@ The tag and `kw_common.__version__` must agree; the release workflow refuses the
 do not. `src/kw_common/__init__.py` is the single source of the version — `pyproject.toml` reads
 it dynamically.
 
+A **release candidate** is the tag `v<version>rcN` (for example `v1.7.0rc1` while
+`__version__` is `1.7.0`), cut from the PR branch before merge. It publishes as a GitHub
+**pre-release** of that version, so a consumer's `dev` line can pin it; the final `v<version>` tag
+is cut on `main` after the merge. Any other tag that does not equal `v<version>` is refused.
+
 ## The leak guard
 
 `kw_common.leakguard` is the fleet's internal-information guard. It used to be a file each
@@ -279,6 +284,13 @@ CI runs the self-test, the tree scan **and** a commit-range scan — different q
 scan asks "is it here now" and reads tracked files only; the range scan reads what each commit
 *added*, so it also catches a value that was committed and then deleted, which stays permanently
 readable at the commit that added it.
+
+It matches **shapes**, never real values: RFC 1918 and CGNAT addresses, unique-local and
+link-local IPv6 addresses, tailnet names, `.lan`/`.local`/`.home.arpa` hosts, stock Unraid pool
+paths, consumer-mail addresses, Windows profile paths and UUIDs. A finding prints the shape, the
+file and the line — **never the matched value**, which would otherwise be republished in the CI
+log. A path, revision range or directory printed alongside it has any shape in it redacted to
+`<its label>`.
 
 ### Configuring it — from YOUR repository, never by editing the install
 
@@ -411,7 +423,8 @@ the library.
 Placeholders in code, tests, comments and documentation come from the guard's own `_MUST_PASS`
 corpus — the list of shapes it is pinned to *allow*: `example.com` and `*.example` for hosts, the
 RFC 5737 documentation ranges (`192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24`) for addresses,
-and `/mnt/POOL/appdata/<app>` or the container path the code actually uses for filesystem paths.
+RFC 3849's `2001:db8::/32` for an IPv6 address, and `/mnt/POOL/appdata/<app>` or the container
+path the code actually uses for filesystem paths.
 "Realistic" is not a reason to write a real value.
 
 ⚠️ `*.invalid` is **not** in `_MUST_PASS`, and it is not a blanket-safe suffix. `example.invalid`
