@@ -26,7 +26,8 @@ module's `__all__` was removed or changed in signature — MINOR.
 * **A finding no longer prints the matched value** — only the shape, the file and the line. Any
   printed path, revision range or directory has its shapes redacted to `<label>`. The value used to
   be republished in every CI log that reported it. Exit codes are unchanged.
-* Control bytes in a printed path are escaped, so a decoded filename cannot rewrite a finding line.
+* Control bytes other than the newline are escaped in printed output, so an ESC or CR in a decoded
+  filename cannot overwrite a finding line. A newline in a filename still starts a new line.
 
 A `.gitignore` glob whose `*` follows `.local`/`.lan` directly is still a finding (consumer#237):
 Markdown emphasis around a real host is the same string. Allow the literal in `.leakguard.json`.
