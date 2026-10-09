@@ -93,14 +93,19 @@ KNOWN LIMITS (state them; do not pretend to coverage)
         globs, which are ordinary clean lines. `<label>.local.` at a sentence end and
         `<label>.lan.` at a sentence end are the same string shape and no regex separates them,
         so this takes the fail-quiet side deliberately. Do not "fix" it.
-      * A `.gitignore` glob ending immediately after the label — `*config.local*` — no longer
-        fires (consumer#237): `*` joined the right bound. That is a glob star, not the trailing DOT
-        above, which stays a deliberate miss.
+      * A `.gitignore` glob ending immediately after the label — `*config.local*` — DOES fire, a
+        real false positive (consumer#237). Rejecting a following `*` was tried and reverted: the
+        Markdown emphasis `**<host>.lan**` and `*<host>.local*` is the same string, and that is a
+        real host. Allow the literal in `.leakguard.json`. Pinned by a test.
       * IPv6 is matched for the two PRIVATE ranges only — unique-local `fc00::/7` and link-local
         `fe80::/10`, each as a full eight-group address or a `::`-elided one. Deprecated site-local
         `fec0::/10`, an IPv4-mapped tail (`::ffff:<v4>`, whose v4 half the IPv4 patterns judge on
         its own) and global unicast are not; a global address is the project-side guard's job, as
         a custom pool name is. The range bases written AS ranges (`fd00::/8`) are allowed.
+        Two private spellings are MISSED, because the left bound that keeps the pattern off longer
+        hex-and-colon runs cannot tell a `<word>:` prefix from one more hextet: an address straight
+        after a colon (`--add-host db:<ula>`, SPF `ip6:<ula>`), and a six-hextet form ending in an
+        embedded IPv4 (`<ula-prefix>:1:2:3:4:5:<v4>`, whose v4 half is judged alone).
       * THE TREE SCAN READS THE WORKTREE, and that is still true — but it is no longer a GAP,
         because it is no longer the only thing the commit-time layer runs. `git add cfg.txt` while
         it holds a leak, then overwrite cfg.txt with a clean version and do not re-stage: the tree
@@ -314,7 +319,7 @@ PATTERNS: list[tuple[str, str]] = [
     ("private IPv6 (ULA / link-local)",
      r"(?<![\w:])(?:f[cd][0-9a-f]{2}|fe[89ab][0-9a-f])"
      r"(?:(?::[0-9a-f]{1,4}){7}"
-     r"|(?::[0-9a-f]{1,4}){0,5}::(?:[0-9a-f]{1,4}(?::[0-9a-f]{1,4}){0,5})?)(?![\w:])"),
+     r"|(?::[0-9a-f]{1,4}){0,6}::(?:[0-9a-f]{1,4}(?::[0-9a-f]{1,4}){0,5})?)(?![\w:])"),
     # ⚠️ Left-bounded, and with `(?<![\w-])` specifically — NOT `(?<![\w.-])`.
     # `\b[\w-]+\.` was an instance of the unbounded-leading-class defect this file has been bitten
     # by three times: `-` is in the class but is not a word character, so `\b` held at every
@@ -339,12 +344,12 @@ PATTERNS: list[tuple[str, str]] = [
     # is a `_MUST_PASS` case pinning this. If an estate ever genuinely adopts `.internal`, it
     # belongs in the project-side real-literal guard, not here.
     #
-    # ⭐ `*` IS IN THE RIGHT BOUND (consumer#237). A `.gitignore` glob that ends straight after the
-    # label — `*config.local*`, `**/settings.local*` — is a filename pattern, not a host, and fired
-    # because `*` is not a label character. A host is never followed by a glob star, so rejecting
-    # one costs no real catch. This is NOT the reverted trailing-DOT repair (KNOWN LIMITS): a `.`
-    # after the label is still allowed, exactly as before.
-    ("private lan domain", r"(?<![\w-])[\w-]+\.(?:lan|local)(?![\w.*-])"),
+    # ⛔ `*` IS NOT IN THE RIGHT BOUND; adding it was tried and REVERTED (consumer#237). It silenced
+    # the `.gitignore` glob `*config.local*` — and equally the Markdown emphasis `*printer-b.local*`
+    # and `**nas-a.lan**`, a real host in a README or a table cell. A glob and emphasis are the same
+    # string, and content is the ONLY surface that catches a `.local` host, so the glob stays a
+    # stated false positive (KNOWN LIMITS) with `allow_literals` as its remedy.
+    ("private lan domain", r"(?<![\w-])[\w-]+\.(?:lan|local)(?![\w.-])"),
     # ⭐ RFC 8375's `home.arpa` (consumer#245) — the standards-track spelling of what `.lan` is by
     # convention, and what a home router hands out as its search domain. A LABEL must precede it,
     # so prose naming the zone itself (`RFC 8375 reserves home.arpa`) does not fire. The right
@@ -1390,12 +1395,22 @@ def _index_entries(root: Path) -> dict[str, tuple[str, str]]:
     out = subprocess.run(["git", "ls-files", "-s", "-z"], cwd=root, capture_output=True,
                          check=True, timeout=_GIT_TIMEOUT_S)
     entries: dict[str, tuple[str, str]] = {}
-    for entry in out.stdout.decode("utf-8", errors="replace").split("\0"):
-        if not entry:
+    for raw in out.stdout.split(b"\0"):
+        if not raw:
             continue
+        # ⛔ A PATH THAT IS NOT VALID UTF-8 GETS NO SHA. Decoded with `errors="replace"`, two
+        # different byte paths (`a\xfe.txt`, `a\xff.txt`) become ONE key, and the batched read of
+        # an absent file then scanned whichever blob was listed last under the other's name — a
+        # committed leak exited 0. No SHA means the file is reported unreadable: fail closed.
+        try:
+            entry, exact = raw.decode("utf-8"), True
+        except UnicodeDecodeError:
+            entry, exact = raw.decode("utf-8", errors="replace"), False
         meta, _, path = entry.partition("\t")
         mode, sha, stage = ([*meta.split(" "), "", ""])[:3]
-        entries[path] = (mode, sha if stage == "0" else "")
+        # A second stage-0 entry under one decoded key is the same collision, whichever came first.
+        collided = stage == "0" and path in entries
+        entries[path] = (mode, sha if stage == "0" and exact and not collided else "")
     return entries
 
 
@@ -1470,6 +1485,9 @@ def _ascii(s: str) -> str:
     """
     for label, rx in _redaction_patterns():
         s = rx.sub(f"<{label}>", s)
+    # A path may now carry a raw control byte (a decoded C-quoted name): escape every one but
+    # the newline the multi-line messages use, so ESC or CR cannot rewrite a finding line.
+    s = re.sub(r"[\x00-\x09\x0b-\x1f\x7f]", lambda m: f"\\x{ord(m.group()):02x}", s)
     return s.encode("ascii", "backslashreplace").decode("ascii")
 
 
@@ -2616,12 +2634,16 @@ _MUST_FAIL: list[tuple[str, str]] = [
     ("private IPv6 (ULA / link-local)", "AGENT_URL=http://[fd12:3456:789a:1::1]:9999/mcp"),
     ("private IPv6 (ULA / link-local)", "gateway fe80::1ff:fe23:4567:890a%eth0"),
     ("private IPv6 (ULA / link-local)", "tailnet v6 fd7a:115c:a1e0::1"),
+    ("private IPv6 (ULA / link-local)", "seven hextets then elided: fd12:1:2:3:4:5:6:: here"),
     ("private IPv6 (ULA / link-local)", "full form FD12:3456:789A:0001:0000:0000:0000:0001"),
     ("home network domain (RFC 8375)", "ping printer.home.arpa"),
     ("home network domain (RFC 8375)", "DB_HOST=db-a.home.arpa:5432"),
     ("tailnet name", "https://host-a.tailnet-example.ts.net/"),
     ("private lan domain", "AGENT_URL=http://host-a.lan:9999/mcp"),
     ("private lan domain", "ping printer-b.local"),
+    # Markdown emphasis — why `*` cannot join the right bound (consumer#237's revert).
+    ("private lan domain", "| **host-a.lan** | 10 |"),
+    ("private lan domain", "the printer is *printer-b.local*"),
     ("unraid pool path", 'Default="/mnt/apps/appdata/svc/data"'),
     ("unraid pool path", "Run from: cd /mnt/user/appdata/svc"),
     # The canonical Unraid ARRAY mount. The plural `disks` did not cover `/mnt/disk1`.
@@ -2693,9 +2715,6 @@ _MUST_PASS: list[str] = [
     # `.home.arpa` named as the zone itself, and the reverse-DNS zones that share its suffix.
     "RFC 8375 reserves home.arpa; see also the .home.arpa zone",
     "PTR 1.2.0.192.in-addr.arpa and ip6.arpa",
-    # consumer#237: `.gitignore` globs that end right after the label.
-    "gitignore glob: *config.local*",
-    "ignore **/settings.local*",
     'import helper from "./net.ts" then re-export',
     "store it under /mnt/POOL/appdata/runner-REPO/docker",
     "contact noreply@example.com or support@github.com",
@@ -3284,11 +3303,11 @@ def _scan_tree(root: Path, compiled: list[tuple[str, re.Pattern[str]]]) -> int:
     absent_blobs = _staged_blobs(root, [entries[rel][1] for rel in absent])
     for rel, blob in zip(absent, absent_blobs, strict=True):
         if blob is None:
-            # ⚠️ DO NOT NAME A CAUSE THIS DOES NOT KNOW. The remaining reason the index cannot serve
-            # a tracked path's bytes is that it has no stage-0 entry — an UNMERGED path.
+            # ⚠️ DO NOT NAME A CAUSE THIS DOES NOT KNOW: name the possibilities instead.
             undecodable.append(
-                f"{rel} (absent from the worktree, and git could not read its staged content: "
-                f"the path is probably unmerged and has no stage-0 entry)")
+                f"{rel} (absent from the worktree, and git could not serve its staged content: "
+                f"an unmerged path with no stage-0 entry, a path that is not valid UTF-8, or an "
+                f"index entry whose object is missing)")
             continue
         consume(rel, blob, True)
 
@@ -3469,6 +3488,10 @@ def _working_tree_encoded(root: Path, rel: str) -> Reading | None:
     says the attribute is set, the BLOB is what a commit records, so that is what is scanned, the
     same fallback the unraid-templates guard ships. Fail-closed: no attribute, an unreadable blob,
     or a blob that is itself not NUL-free UTF-8 returns `None` and the refusal stands.
+
+    ⚠️ SO FOR SUCH A FILE THE TREE SCAN READS THE INDEX, NOT THE WORKTREE: an unstaged edit to
+    its checked-out copy is not seen here. It is seen by `--staged` and `--range` once it is
+    added, which is the only way it can be committed.
     """
     attr = _git(root, "check-attr", "working-tree-encoding", "--", rel).strip()
     if attr.rpartition(": ")[2] in ("", "unspecified", "unset"):
