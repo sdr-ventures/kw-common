@@ -1089,11 +1089,11 @@ def test_the_untouchable_lan_local_pattern_is_exactly_as_decided() -> None:
     happens to carry only the three `.local` FILENAME forms the bad repair also passes. Pinning
     the decision is the only thing that makes undoing it loud, so this asserts the regex source.
 
-    The one deliberate change since: `*` joined the right bound (consumer#237), which rejects a glob
-    star after the label and leaves a following DOT exactly as allowed as before.
+    A `*` in the right bound was ALSO tried and reverted (consumer#237): it silenced Markdown
+    emphasis around a real host, `**<host>.lan**`.
     """
     assert (dict(guard.PATTERNS)["private lan domain"]
-            == r"(?<![\w-])[\w-]+\.(?:lan|local)(?![\w.*-])"), (
+            == r"(?<![\w-])[\w-]+\.(?:lan|local)(?![\w.-])"), (
         "the `private lan domain` pattern changed. If this is the trailing-dot 'repair', it was "
         "tried before and reverted for false-firing on config.local.${ENV} and .gitignore globs "
         "— see KNOWN LIMITS. Do not re-apply it.")
@@ -1116,15 +1116,26 @@ def test_the_false_positives_that_forced_the_trailing_dot_revert_stay_clean(samp
 
 @pytest.mark.parametrize("glob", ["gitignore glob: *config." + "local*",
                                   "ignore **/settings." + "local*"])
-def test_a_trailing_glob_is_NOT_a_finding(glob: str) -> None:
-    """consumer#237 / unraid-templates#32, CLOSED. A `.gitignore` glob that ends straight after the
-    label used to trip `private lan domain` because `*` is not a label character. `*` is in the
-    right bound now; a host is never followed by a glob star. (Fragmented: this file is scanned.)
+def test_a_trailing_glob_IS_a_known_false_positive_and_is_recorded_as_one(glob: str) -> None:
+    """⚠️ AN HONEST PIN OF A REAL FALSE POSITIVE (consumer#237), not a claim that it is fine.
+
+    A `.gitignore` glob ending straight after the label trips `private lan domain`, because `*` is
+    not a label character. Rejecting a following `*` was tried and REVERTED: Markdown emphasis
+    around a real host is the same string (see the next test). The remedy is an allow-literal.
+    (Fragmented: this file is scanned.)
     """
-    assert guard.scan_text(glob, COMPILED) == []
+    assert [h[1] for h in guard.scan_text(glob, COMPILED)] == ["private lan domain"]
 
 
-def test_the_glob_bound_did_not_drop_a_REAL_host() -> None:
+@pytest.mark.parametrize("line", ["| **" + _HOST + "** | 10 |", "the printer is *printer-b." +
+                                  "local*", "**" + _HOST + "**"])
+def test_a_host_in_MARKDOWN_EMPHASIS_is_caught(line: str) -> None:
+    """Why the glob above cannot be fixed by the bound: content is the only surface that catches a
+    `.local` host at all, and a README table cell is an ordinary place to write one."""
+    assert [h[1] for h in guard.scan_text(line, COMPILED)] == ["private lan domain"], line
+
+
+def test_the_lan_local_pattern_still_catches_a_REAL_host() -> None:
     """The other direction: the hosts the pattern exists for still fire, including the
     sentence-final dot the reverted repair was about."""
     for line in (f"AGENT_URL=http://{_HOST}:9999/mcp", f"ping {_HOST}", f"see {_HOST}, then",

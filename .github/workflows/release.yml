@@ -233,9 +233,11 @@ jobs:
           echo "tag=${tag}  package=${pkg}"
           prerelease=false
           candidate_of=""
-          if [[ "$tag" =~ ^(.+)rc[0-9]+$ ]]; then
+          # rc1 upwards, no leading zero; a package that is itself an rc takes no second suffix.
+          if [[ "$tag" =~ ^(.+)rc[1-9][0-9]*$ ]]; then
             prerelease=true
             candidate_of="${BASH_REMATCH[1]}"
+            if [[ "$candidate_of" == *rc* ]]; then candidate_of=""; fi
           fi
           if [ "$tag" != "$pkg" ] && [ "$candidate_of" != "$pkg" ]; then
             echo "::error::tag ${tag} does not match the package version ${pkg}."

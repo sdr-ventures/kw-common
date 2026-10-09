@@ -65,6 +65,7 @@ def _cli(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
     f"gateway {_LINK_LOCAL}%eth0",
     "tailnet v6 fd7a:115c:" + "a1e0::1",
     "FD12:3456:789A:0001:" + "0000:0000:0000:0001",
+    "seven hextets fd12:1:2:3:" + "4:5:6:: elided",
     f"the subnet is {_ULA.rsplit('::', 1)[0]}::/64",
 ])
 def test_a_private_IPv6_address_is_a_finding(line: str) -> None:
@@ -199,6 +200,12 @@ def test_ascii_redacts_every_shape_and_leaves_ordinary_text_alone() -> None:
     assert guard._ascii("README.md:3: tailnet name") == "README.md:3: tailnet name"
 
 
+def test_ascii_escapes_control_bytes_a_decoded_path_can_now_carry() -> None:
+    """A C-quoted path is decoded now, so ESC or CR in a filename would reach the terminal raw and
+    could rewrite the finding line. Every control byte but the newline is escaped."""
+    assert guard._ascii("a\x1b[2Kb\rc\x01d\ne") == "a\\x1b[2Kb\\x0dc\\x01d\ne"
+
+
 # --------------------------------------------------------------- #31: working-tree-encoding
 
 
@@ -295,6 +302,36 @@ def test_absent_files_are_read_in_ONE_subprocess_not_one_each(
     assert len(cat_files) <= 2, (
         f"{len(cat_files)} cat-file subprocesses for 40 absent files (one for the config lookup "
         f"is expected, one batch for the files): {cat_files[:3]}")
+
+
+@pytest.mark.timeout(300)
+@pytest.mark.parametrize("leak_byte,clean_byte", [
+    (b"\xfe", b"\xff"), (b"\xff", b"\xfe"),
+    # An invalid byte that sorts BEFORE a valid path holding a literal U+FFFD: the valid entry
+    # comes second and would win the shared key without the collision check.
+    (b"\x80", "�".encode()),
+])
+def test_two_NON_UTF8_paths_that_decode_alike_are_never_vouched_for_by_the_wrong_blob(
+    tmp_path: Path, leak_byte: bytes, clean_byte: bytes,
+) -> None:
+    """Two index paths that differ only in an invalid byte both decode to `a\\ufffd.txt`, a name
+    no file has, so they reach the absent-file branch. The batched read keyed them by that one
+    decoded name and scanned whichever blob came last — in one index order a committed leak
+    exited 0. Neither order may pass now: the path is reported unreadable, as it was before."""
+    repo = tmp_path / "collide"
+    _init(repo)
+
+    def blob(data: bytes) -> str:
+        return subprocess.run(["git", "hash-object", "-w", "--stdin"], cwd=repo, input=data,
+                              capture_output=True, check=True).stdout.decode().strip()
+
+    leak, clean = blob(f"AGENT={_ADDR}\n".encode()), blob(b"clean\n")
+    info = (b"100644 " + leak.encode() + b"\ta" + leak_byte + b".txt\0"
+            + b"100644 " + clean.encode() + b"\ta" + clean_byte + b".txt\0")
+    subprocess.run(["git", "update-index", "-z", "--add", "--index-info"], cwd=repo, input=info,
+                   capture_output=True, check=True)
+    proc = _cli(repo)
+    assert proc.returncode == 1, f"a leak behind a colliding path scanned clean: {proc.stdout}"
 
 
 def test_the_batch_reader_cannot_be_shifted_by_a_missing_or_non_blob_answer(

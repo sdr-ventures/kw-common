@@ -90,6 +90,9 @@ def test_a_release_or_a_candidate_for_it_is_accepted(tmp_path: Path, tag: str, p
     ("v1.7.0rc", "1.7.0"),      # no candidate number
     ("v1.7.0-rc1", "1.7.0"),    # not the PEP 440 spelling the fleet pins
     ("v1.7.0rc1x", "1.7.0"),
+    ("v1.7.0rc0", "1.7.0"),     # candidates count from rc1
+    ("v1.7.0rc01", "1.7.0"),
+    ("v1.7.0rc1rc2", "1.7.0rc1"),  # a candidate of a candidate
 ])
 def test_any_other_tag_is_refused_and_publishes_nothing(tmp_path: Path, tag: str,
                                                         package: str) -> None:
