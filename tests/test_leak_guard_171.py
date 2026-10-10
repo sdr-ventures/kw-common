@@ -390,3 +390,52 @@ def test_the_found_and_widening_messages_echo_the_range_shape_only(tmp_path: Pat
     gone = f"{'0' * 39}1_{_ADDR}"
     widened = _guard(repo, "--range", f"{gone}..{branch}")
     assert "WIDENING" in widened.stdout and _ADDR not in widened.stdout, widened.stdout
+
+
+# ------------------------------------------- findings of the independent verification
+
+
+@pytest.mark.timeout(300)
+def test_install_and_check_do_not_echo_a_shape_in_the_repository_path(tmp_path: Path) -> None:
+    """The hook paths and the repository root are operator-controlled text too."""
+    repo = _repo(tmp_path, f"r_{_ADDR}")
+    for argv in (["--install-hooks"], ["--check-hooks"]):
+        res = _guard(repo, *argv)
+        assert res.returncode == 0 and _ADDR not in res.stdout + res.stderr, res.stdout
+    _git(repo, "config", "core.hooksPath", f"//{_ADDR}_share/hooks")
+    res = _guard(repo, "--check-hooks")
+    assert res.returncode == 1 and _ADDR not in res.stdout + res.stderr, res.stdout
+
+
+@pytest.mark.timeout(300)
+def test_a_hung_hook_interpreter_is_an_inactive_hook_not_a_traceback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    repo = _repo(tmp_path)
+    assert _guard(repo, "--install-hooks").returncode == 0
+    real = subprocess.run
+
+    def hang(cmd: list[str], *a: object, **k: object) -> subprocess.CompletedProcess[str]:
+        if "--probe" in cmd:
+            raise subprocess.TimeoutExpired(cmd, 1)
+        return real(cmd, *a, **k)  # type: ignore[call-overload,no-any-return]
+
+    monkeypatch.setattr(guard.subprocess, "run", hang)
+    assert guard.check_hooks(repo) == 1
+    assert "HOOKS NOT ACTIVE" in capsys.readouterr().out
+
+
+def test_a_very_long_operator_string_is_withheld_whole() -> None:
+    shown = guard._ascii(" ".join(["x" * 150] * 40), strict=True)
+    assert "withheld" in shown and len(shown) < 100
+
+
+@needs_bash
+@pytest.mark.timeout(300)
+def test_a_manual_run_says_it_scans_all_history(tmp_path: Path) -> None:
+    repo = tmp_path / "manual"
+    repo.mkdir()
+    _g(repo, "init", "-q")
+    head = _commit(repo, "a.md", "clean\n")
+    code, out = _scan_step(repo, EVENT="workflow_dispatch", REF="refs/heads/main", HEAD_SHA=head)
+    assert code == 0 and "::notice::" in out and "scanning ALL history" in out, out

@@ -47,8 +47,9 @@ calls a reusable workflow, so the bound lives there.
 when there is nothing to start from, everything reachable is scanned, and the log says so
 (`::notice::… scanning ALL history`). That happens for the **first `v*` tag** a repository ever
 pushes (there is no earlier `v[0-9]*` tag), for the **default branch's first push**, for a new
-branch when the default branch is not available to compare against, and for a manual or
-scheduled run. A history older than the guard can hold a value the guard now rejects; that run
+branch when the default branch is not available to compare against, a push whose previous tip no
+longer exists (a force-push or history rewrite), and a manual or scheduled run. The log says so
+for each except the rewrite, which prints a `WIDENING` notice from the guard itself. A history older than the guard can hold a value the guard now rejects; that run
 goes red once. Make the first tag after adopting from a repository that already has one, or review
 the findings (they name the shape, file and line — never the value) and rewrite or allow them.
 
@@ -69,7 +70,7 @@ and push in **every** worktree until `--install-hooks` is re-run from a live env
 virtual environment inside a worktree, or in a directory a tool cleans up when its session ends,
 is exactly that deleted interpreter waiting to happen. `--check-hooks` runs each hook's own
 command line (`-I -m kw_common.leakguard …`), so it reports an interpreter that cannot run the hook
-— missing, a different pin than expected, or not importable in isolated mode — before git does.
+— missing, an engine too old to know the hook's flags, or not importable in isolated mode — before git does.
 
 `pre-commit` runs the tree scan and the `--staged` scan; `pre-push` range-scans every ref the push
 publishes. Both live in the git directory, so no checkout removes them and every linked worktree
@@ -163,7 +164,9 @@ guards or none.
    ⚠️ **`core.hooksPath` is one repository-wide setting.** It lives in the shared `.git/config`, so
    unsetting it changes the shared checkout **and every linked worktree at once**, whoever is
    working in them; from that moment git runs hooks from the git directory instead, so install the
-   new hooks in the same step. (A clone has its own `.git/config`: repeat this in each clone.)
+   new hooks in the same step. (A clone has its own `.git/config`: repeat this in each clone. With `extensions.worktreeConfig`
+   enabled, a worktree can carry its own `core.hooksPath` that the shared unset does not touch:
+   run `git config --worktree --get core.hooksPath` in each.)
 
    If `.githooks/` also holds hooks unrelated to the guard, keep them and call
    `python -I -m kw_common.leakguard --pre-commit` / `--pre-push "$1"` from them instead; git runs

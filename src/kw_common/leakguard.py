@@ -1501,6 +1501,8 @@ def _ascii(s: str, strict: bool = False) -> str:
 
 # Operator-typed text longer than this is withheld whole when it cannot be checked exhaustively.
 _STRICT_MAX = 200
+# ...and so is a whole string, because the cost is per word and a long one has many.
+_STRICT_TOTAL_MAX = 4000
 
 
 def _redact_shapes(s: str, strict: bool = False) -> str:
@@ -1520,6 +1522,8 @@ def _redact_shapes(s: str, strict: bool = False) -> str:
     for label, rx in pats:
         spans.extend((m.start(), m.end(), label) for m in rx.finditer(s))
     if strict:
+        if len(s) > _STRICT_TOTAL_MAX:
+            return f"<{len(s)} characters withheld: too long to check for shapes>"
         # Per whitespace-delimited word: no shape contains whitespace, and a whole message would
         # make the quadratic check unaffordable. A single word too long to check is withheld.
         for word in re.finditer(r"\S+", s):
@@ -3438,7 +3442,8 @@ def _scan_tree(root: Path, compiled: list[tuple[str, re.Pattern[str]]]) -> int:
         # what a mis-aimed `--repo` looks like, and `no internal info found (0 ...)` is
         # indistinguishable from a real clean run. Saying WHICH repository was empty makes the
         # wrong-directory case visible without reddening the right one.
-        print(f"no internal info found (0 tracked text files scanned; {_ascii(str(root))} has no "
+        where = _ascii(str(root), strict=True)
+        print(f"no internal info found (0 tracked text files scanned; {where} has no "
               f"tracked files at all - check --repo if that is a surprise)")
         return 0
     print(f"no internal info found ({scanned} tracked text files scanned, {examined} tracked "
@@ -3810,7 +3815,7 @@ def install_hooks(root: Path) -> int:
     """Write the pre-commit and pre-push shims into the git directory. See `_HOOK_MARK`."""
     hooks, why = _hooks_dir(root)
     if hooks is None:
-        print(_ascii(f"NOT INSTALLED: {why}"))
+        print(_ascii(f"NOT INSTALLED: {why}", strict=True))
         return 1
     # ⚠️ `absolute()`, NOT `resolve()`: a POSIX venv's `bin/python` is a SYMLINK to the base
     # interpreter, and only the unresolved path activates the venv that has this package in it.
@@ -3821,14 +3826,14 @@ def install_hooks(root: Path) -> int:
             # ⛔ Never overwrite somebody else's hook: merging two is a decision, not a default.
             print(_ascii(f"NOT INSTALLED: {target} exists and was not written by this command. "
                          f"Move it aside (or call `{python} -I -m kw_common.leakguard "
-                         f"{_HOOK_ARGS[name]}` from it), then install again."))
+                         f"{_HOOK_ARGS[name]}` from it), then install again.", strict=True))
             return 1
     hooks.mkdir(parents=True, exist_ok=True)
     for name in _HOOK_ARGS:
         target = hooks / name
         target.write_bytes(_hook_text(name, python).encode("utf-8"))
         target.chmod(0o755)
-        print(_ascii(f"installed {target}"))
+        print(_ascii(f"installed {target}", strict=True))
     return check_hooks(root)
 
 
@@ -3841,7 +3846,7 @@ def check_hooks(root: Path) -> int:
     active: the file must be byte-for-byte what `--install-hooks` writes for its interpreter."""
     hooks, why = _hooks_dir(root)
     if hooks is None:
-        print(_ascii(f"HOOKS NOT ACTIVE: {why}"))
+        print(_ascii(f"HOOKS NOT ACTIVE: {why}", strict=True))
         return 1
     bad: list[str] = []
     for name in _HOOK_ARGS:
@@ -3869,8 +3874,8 @@ def check_hooks(root: Path) -> int:
                                   "--probe"], cwd=root, capture_output=True, text=True,
                                  stdin=subprocess.DEVNULL, timeout=_GIT_TIMEOUT_S)
             answer = ran.stdout.strip() if ran.returncode == 0 else ""
-        except OSError:
-            answer = ""
+        except (OSError, subprocess.TimeoutExpired):
+            answer = ""  # a hung interpreter is an inactive hook, not a traceback
         if not answer.startswith("hook probe ok"):
             bad.append(f"{name}: {python} cannot run `-I -m kw_common.leakguard "
                        f"{_HOOK_ARGS[name]}` (kw_common.leakguard missing, too old for this "
@@ -3878,9 +3883,9 @@ def check_hooks(root: Path) -> int:
     if bad:
         print("HOOKS NOT ACTIVE - run `kw-leak-guard --install-hooks`:")
         for b in bad:
-            print("  " + _ascii(b))
+            print("  " + _ascii(b, strict=True))
         return 1
-    print(_ascii(f"hooks active: pre-commit and pre-push in {hooks}"))
+    print(_ascii(f"hooks active: pre-commit and pre-push in {hooks}", strict=True))
     return 0
 
 

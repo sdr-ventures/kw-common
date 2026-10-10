@@ -157,6 +157,7 @@ jobs:
               fi ;;
             *)
               # Any other trigger (a schedule, a manual run): everything reachable, the widest scan.
+              echo "::notice::this trigger has no range to start from: scanning ALL history reachable from ${HEAD_SHA}"
               range="$HEAD_SHA" ;;
           esac
           echo "range: $range"
