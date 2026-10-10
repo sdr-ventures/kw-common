@@ -1897,7 +1897,8 @@ def test_a_record_with_an_unparseable_timestamp_is_kept(tmp_path: Path) -> None:
 # the suite — three of them by design (guards the code documents as individually redundant) —
 # across items 2, 3, 4, 5, 6, 7, 8, 9 and 11 of the issue; the items already pinned were the
 # ERROR ntfy tag (6) and the `#` comment skip (10). Item 4's third gate, `notify`'s own, is
-# uncatchable by construction — the other two make it a no-op — and is not claimed here.
+# a no-op alongside the other two and is pinned by a spy further down; item 10 turned out to be
+# caught only incidentally and has its own test there too.
 def test_a_failed_delivery_restores_the_previous_entry_of_an_escalating_condition(
         settings: AlertSettings, channels: dict[str, Spy],
         monkeypatch: pytest.MonkeyPatch) -> None:
@@ -4112,3 +4113,87 @@ def test_an_ordinary_bracketed_ipv6_topic_is_still_READY() -> None:
     case is RFC 3849's documentation prefix: a link-local literal is a leak-guard finding."""
     for url in ("https://[::1]/topic", "https://[::1]:8443/topic", "https://[2001:db8::1]/t"):
         assert AlertConfig(ntfy_url=url).ntfy_ready() is True, url
+
+
+# ================================ #6, the survivors the first pass missed (measured on 1.7.0)
+# A commented-out setting taking effect, the rollback's no-op write, the single `previous`
+# guards, `notify`'s own opt-out gate and the file modes the OS calls set were all still free to
+# change. The two `0o700`/`0o600` arguments are redundant with the `_restrict` calls by design;
+# the tests below make `chmod` fail so the argument is the only thing standing.
+def test_a_commented_out_setting_does_not_take_effect(tmp_path: Path) -> None:
+    """#6 item 10. The existing comment line has no `=`, so a different clause filtered it: a
+    parser that stopped skipping `#` would have turned `#EMAIL_TO=...` into a live setting."""
+    path = tmp_path / "alerting.env"
+    path.write_text("#EMAIL_TO=ops@example.com\n  # SMTP_HOST=smtp.example.com\n"
+                    "EMAIL_FROM=alerts@example.com\n", encoding="utf-8")
+    assert alerting._parse_env_file(str(path)) == {"EMAIL_FROM": "alerts@example.com"}
+
+
+def test_a_rollback_that_changes_nothing_writes_nothing(
+        settings: AlertSettings, monkeypatch: pytest.MonkeyPatch) -> None:
+    """#6 item 2: when the entry is already what it was, `_forget_unreported` must not rewrite the
+    state file or log that it un-recorded anything."""
+    entry = {"first": 1.0, "last": 2.0, "count": 3}
+    Path(settings.state_file or "").write_text(json.dumps({"svc: down": entry}),
+                                                encoding="utf-8")
+    alerter = Alerter(settings)
+    writes: list[object] = []
+    monkeypatch.setattr(Alerter, "_write_state", lambda self, state: writes.append(state))
+    alerter._forget_unreported("svc: down", entry)
+    assert writes == []
+
+
+def test_each_previous_snapshot_guard_stands_on_its_own(
+        settings: AlertSettings, channels: dict[str, Spy],
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """#6 item 3: the code says either guard alone is sufficient. So an OK takes no snapshot
+    (guard one) and a delivery that reached somebody un-records nothing (guard two)."""
+    alerter = Alerter(settings)
+    peeks: list[str] = []
+    forgets: list[str] = []
+    monkeypatch.setattr(Alerter, "_peek_condition",
+                        lambda self, title: peeks.append(title) or alerting._MISSING)
+    monkeypatch.setattr(Alerter, "_forget_unreported",
+                        lambda self, title, previous: forgets.append(title))
+    alerter.notify(OK, "svc: down", "recovered")
+    assert peeks == [], "an OK snapshotted the condition it is clearing"
+    alerter.notify(ERROR, "svc: down", "x")           # delivered by the ntfy spy
+    assert forgets == [], "a delivered alert was rolled back"
+    channels["ntfy"].fail = OSError("down")
+    alerter.notify(ERROR, "svc: other", "x")          # reaches nobody
+    assert forgets == ["svc: other"]
+    alerter.notify(OK, "svc: other", "recovered")     # reaches nobody, but an OK is never undone
+    assert forgets == ["svc: other"]
+
+
+def test_notify_does_not_consult_the_de_duplicator_when_the_state_file_is_none(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """#6 item 4, third gate: `_read_state`/`_write_state` already make the opt-out safe, so only
+    a spy on `_should_send` can see that `notify`'s own gate is there."""
+    alerter = Alerter(AlertSettings(service="svc", ntfy_url="https://ntfy.example.com/svc",
+                                    state_file=None))
+    asked: list[str] = []
+    monkeypatch.setattr(Alerter, "_should_send",
+                        lambda self, *a, **k: asked.append("asked") or True)
+    assert alerter.notify(ERROR, "svc: down", "x")["ntfy"] == "sent"
+    assert asked == []
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX file modes")
+def test_the_error_log_is_created_private_even_when_chmod_cannot_help(
+        settings: AlertSettings, monkeypatch: pytest.MonkeyPatch) -> None:
+    """#6 item 1: the directory's `makedirs` mode and `os.open`'s file mode are what stand when the
+    `_restrict` calls fail; a 0o755/0o644 there is a credential-bearing log readable by the host."""
+    def refuse(*_a: object, **_k: object) -> None:
+        raise PermissionError("chmod refused")
+
+    monkeypatch.setattr(alerting.os, "chmod", refuse)
+    previous = os.umask(0)
+    try:
+        Alerter(settings).notify(ERROR, "svc: down", "x")
+    finally:
+        os.umask(previous)
+    log = Path(settings.error_log or "")
+    assert log.is_file(), "premise: the record was written"
+    assert (log.stat().st_mode & 0o777) == 0o600
+    assert (log.parent.stat().st_mode & 0o777) == 0o700

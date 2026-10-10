@@ -16,13 +16,13 @@ no port, no alignment audit, and no "which copy is the good one" question to ans
 Consumers install from git at an **exact tag** — never a branch:
 
 ```
-pip install git+https://github.com/texasdaddy/kw-common@v1.7.0
+pip install git+https://github.com/texasdaddy/kw-common@v1.7.1
 ```
 
 In a `requirements.in` / `requirements.txt`:
 
 ```
-kw-common @ git+https://github.com/texasdaddy/kw-common@v1.7.0
+kw-common @ git+https://github.com/texasdaddy/kw-common@v1.7.1
 ```
 
 ⛔ **Never pin a branch.** `@main` makes every rebuild of every consumer a silent, unreviewed
@@ -257,8 +257,8 @@ The tag and `kw_common.__version__` must agree; the release workflow refuses the
 do not. `src/kw_common/__init__.py` is the single source of the version — `pyproject.toml` reads
 it dynamically.
 
-A **release candidate** is the tag `v<version>rcN` (for example `v1.7.0rc1` while
-`__version__` is `1.7.0`), cut from the PR branch before merge. It publishes as a GitHub
+A **release candidate** is the tag `v<version>rcN` (for example `v1.7.1rc1` while
+`__version__` is `1.7.1`), cut from the PR branch before merge. It publishes as a GitHub
 **pre-release** of that version, so a consumer's `dev` line can pin it; the final `v<version>` tag
 is cut on `main` after the merge. Any other tag that does not equal `v<version>` is refused.
 
@@ -434,8 +434,12 @@ the package and the hook *fails*, so git refuses the commit or push instead of s
 `--install-hooks` refuses while `core.hooksPath` is set — an empty value too, which turns every
 hook off — and never overwrites a hook it did not write. The hooks run the interpreter isolated
 (`-I`), so a `kw_common/` directory in the repository cannot stand in for the guard; install the
-pin into a virtual environment, not with `pip install --user`. A push of a tag that points at a
-blob or a tree is refused, because no scan reads that content.
+pin into a virtual environment, not with `pip install --user`, and put that environment outside
+every worktree and any session scratch directory: it is shared by all of them, and deleting it
+makes git refuse every commit and push until the hooks are installed again. `--check-hooks` runs
+each hook's own command line (`-I -m kw_common.leakguard …`) rather than importing the module, so
+an interpreter that imports the guard but cannot run the hook is reported as inactive. A push of a
+tag that points at a blob or a tree is refused, because no scan reads that content.
 [`docs/ADOPTION.md`](docs/ADOPTION.md) is the full migration for each kind of repository.
 
 ### This repository is PUBLIC

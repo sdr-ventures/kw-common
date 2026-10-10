@@ -1470,7 +1470,7 @@ def _exempt(label: str, rel_path: str) -> bool:
     return any(lb == label and rx.search(rel_path) for lb, rx in _PATH_EXEMPT_RX)
 
 
-def _ascii(s: str) -> str:
+def _ascii(s: str, strict: bool = False) -> str:
     """A form safe to `print` from a git hook.
 
     ⚠️ STDOUT IS A PIPE THERE, so Python falls back to the locale encoding (cp1252 on these
@@ -1487,13 +1487,64 @@ def _ascii(s: str) -> str:
     a leak in it), so every printed string is redacted here, at the one place they all pass
     through: each span any content or path pattern matches becomes `<its label>`. Over-redaction
     is harmless; it ignores the allow-lists on purpose.
+
+    `strict=True` is for text an OPERATOR typed (a revision range, a ref or remote name): it also
+    redacts a shape the patterns' boundaries would refuse because it abuts `..`, `_`, `:` or a
+    digit. See `_redact_shapes`.
     """
-    for label, rx in _redaction_patterns():
-        s = rx.sub(f"<{label}>", s)
+    s = _redact_shapes(s, strict)
     # A path may now carry a raw control byte (a decoded C-quoted name): escape every one but
     # the newline the multi-line messages use, so ESC or CR cannot rewrite a finding line.
     s = re.sub(r"[\x00-\x09\x0b-\x1f\x7f]", lambda m: f"\\x{ord(m.group()):02x}", s)
     return s.encode("ascii", "backslashreplace").decode("ascii")
+
+
+# Operator-typed text longer than this is withheld whole when it cannot be checked exhaustively.
+_STRICT_MAX = 200
+
+
+def _redact_shapes(s: str, strict: bool = False) -> str:
+    r"""`s` with every shape span replaced by `<its label>`.
+
+    The patterns' own boundaries (`(?<![\d.])`, `(?<![\w:])`, `(?![\w])`) exist so a shape is not
+    read out of the middle of a longer token, and they are RIGHT for scanning. For PRINTING
+    OPERATOR-TYPED TEXT they are wrong: a revision range like `main..<addr>` or `ref:<ipv6>` or
+    `<addr>_tail` has the shape butted against a character the boundary refuses, and was echoed
+    intact. `strict` therefore asks of EVERY substring whether a pattern matches it whole, as if it
+    stood alone. That over-redacts the tail of a longer token, which is harmless in a message and
+    the safe direction for a leak guard. It is quadratic, so it is for the few operator strings
+    only, run word by word; a word too long to check is withheld outright.
+    """
+    spans: list[tuple[int, int, str]] = []
+    pats = _redaction_patterns()
+    for label, rx in pats:
+        spans.extend((m.start(), m.end(), label) for m in rx.finditer(s))
+    if strict:
+        # Per whitespace-delimited word: no shape contains whitespace, and a whole message would
+        # make the quadratic check unaffordable. A single word too long to check is withheld.
+        for word in re.finditer(r"\S+", s):
+            lo = word.start()
+            text = word.group()
+            if len(text) > _STRICT_MAX:
+                note = f"{len(text)} characters withheld: too long to check"
+                spans.append((lo, word.end(), note))
+                continue
+            for label, rx in pats:
+                for i in range(len(text)):
+                    for j in range(i + 1, len(text) + 1):
+                        if rx.fullmatch(text[i:j]):
+                            spans.append((lo + i, lo + j, label))
+    out: list[str] = []
+    pos = 0
+    for a, b, label in sorted(spans, key=lambda t: (t[0], -t[1])):
+        if a < pos:
+            pos = max(pos, b)  # overlaps the previous span: it swallows the tail
+            continue
+        out.append(s[pos:a])
+        out.append(f"<{label}>")
+        pos = b
+    out.append(s[pos:])
+    return "".join(out)
 
 
 @functools.cache
@@ -3012,6 +3063,7 @@ class Args(NamedTuple):
     pre_push: str | None = None
     install_hooks: bool = False
     check_hooks: bool = False
+    probe: bool = False
 
 
 def _value_for(flag: str, argv: list[str], i: int) -> str:
@@ -3049,6 +3101,7 @@ def parse_args(argv: list[str]) -> Args:
     pre_push: str | None = None
     install_hooks = False
     check_hooks = False
+    probe = False
     i = 0
     while i < len(argv):
         arg = argv[i]
@@ -3069,6 +3122,8 @@ def parse_args(argv: list[str]) -> Args:
             install_hooks = True
         elif arg == "--check-hooks":
             check_hooks = True
+        elif arg == "--probe":
+            probe = True
         elif arg == "--range":
             rev_range = _value_for("--range", argv, i)
             i += 1
@@ -3114,6 +3169,9 @@ def parse_args(argv: list[str]) -> Args:
         raise UsageError("--selftest, --range, --staged, --pre-commit, --pre-push, "
                          "--install-hooks and --check-hooks do different things; "
                          "run them one at a time")
+    if probe and not (pre_commit or pre_push is not None):
+        # The probe exists so `--check-hooks` can run a hook's exact command line without scanning.
+        raise UsageError("--probe modifies --pre-commit or --pre-push and nothing else")
     if want_help and any(modes):
         # `--range A..B --help` printed the usage and exited 0 — an accepted argument combination
         # that substitutes "no scan" for a scan and reports success. That is the same shape as the
@@ -3133,7 +3191,7 @@ def parse_args(argv: list[str]) -> Args:
         raise UsageError("--install-hooks and --check-hooks scan nothing, so --config would be "
                          "ignored; the hooks read the repository's own .leakguard.json")
     return Args(selftest, rev_range, repo, want_help, staged, config, pre_commit, pre_push,
-                install_hooks, check_hooks)
+                install_hooks, check_hooks, probe)
 
 
 def _link_text(path: Path) -> bytes:
@@ -3622,14 +3680,14 @@ def _scan_commits(root: Path, rev_range: str,
         return 1
     rev_range, widened = widen_unreachable_base(root, rev_range)
     if widened:
-        print(_ascii(widened))
+        print(_ascii(widened, strict=True))
     try:
         result = scan_range(root, rev_range, compiled)
     except subprocess.CalledProcessError as exc:
         # A range git cannot resolve is NOT a pass. A shallow clone, an unfetched base or a typo
         # would otherwise scan zero commits and print a clean result — the one failure mode a
         # guard must never have.
-        print(_ascii(f"could not scan {rev_range!r}: git exited {exc.returncode}. ")
+        print(_ascii(f"could not scan {rev_range!r}: git exited {exc.returncode}. ", strict=True)
               + "Fetch the base ref (CI needs fetch-depth: 0) or check the range.")
         return 1
     if result.unscannable:
@@ -3656,7 +3714,7 @@ def _scan_commits(root: Path, rev_range: str,
         # crashing at the exact moment it had something to say. The finding LIST was made
         # ASCII-safe and these three `rev_range` sites were missed: the instance, not the class.
         print(_ascii(f"INTERNAL INFO FOUND in {len(result.findings)} place(s) published by "
-                     f"{rev_range} ")
+                     f"{rev_range} ", strict=True)
               + "- pushing publishes HISTORY:\n")
         for f in result.findings:
             print("  " + _ascii(f))
@@ -3693,7 +3751,8 @@ def _scan_commits(root: Path, rev_range: str,
     # perfectly clean range scan on a branch with a non-ASCII name still died with a traceback
     # under a hook's cp1252 stdout. A guard that crashes when it has nothing to report is the
     # purest form of the false-red it exists to avoid. The instance, not the class, twice.
-    print(_ascii(f"no internal info added across {result.commits} commit(s) in {rev_range}"))
+    print(_ascii(f"no internal info added across {result.commits} commit(s) in {rev_range}",
+                 strict=True))
     return 0
 
 
@@ -3800,14 +3859,22 @@ def check_hooks(root: Path) -> int:
         if os.name != "nt" and not os.access(target, os.X_OK):
             bad.append(f"{name}: not executable, so git skips it ({target})")
             continue
+        # ⛔ THE HOOK'S OWN COMMAND LINE, not a stand-in for it: `-I -m kw_common.leakguard`, the
+        # hook's flag, and `--probe`. An import check passed an interpreter whose installed engine
+        # predates the hook's flag, or whose module does not run as `__main__` - both of which
+        # fail every commit under git.
+        probe_argv = ["--pre-commit"] if name == "pre-commit" else ["--pre-push", ""]
         try:
-            imports = subprocess.run([python, "-I", "-c", "import kw_common.leakguard"],
-                                     cwd=root, capture_output=True,
-                                     timeout=_GIT_TIMEOUT_S).returncode == 0
+            ran = subprocess.run([python, "-I", "-m", "kw_common.leakguard", *probe_argv,
+                                  "--probe"], cwd=root, capture_output=True, text=True,
+                                 stdin=subprocess.DEVNULL, timeout=_GIT_TIMEOUT_S)
+            answer = ran.stdout.strip() if ran.returncode == 0 else ""
         except OSError:
-            imports = False
-        if not imports:
-            bad.append(f"{name}: {python} cannot import kw_common.leakguard")
+            answer = ""
+        if not answer.startswith("hook probe ok"):
+            bad.append(f"{name}: {python} cannot run `-I -m kw_common.leakguard "
+                       f"{_HOOK_ARGS[name]}` (kw_common.leakguard missing, too old for this "
+                       f"hook, or not runnable as __main__)")
     if bad:
         print("HOOKS NOT ACTIVE - run `kw-leak-guard --install-hooks`:")
         for b in bad:
@@ -3843,7 +3910,7 @@ def _pre_push(root: Path, remote: str, refs: str,
         if not fields:
             continue
         if len(fields) != 4:
-            print(_ascii(f"pre-push REFUSED: cannot parse the ref line {line!r}"))
+            print(_ascii(f"pre-push REFUSED: cannot parse the ref line {line!r}", strict=True))
             worst = 1
             continue
         local_ref, local_sha, _, remote_sha = fields
@@ -3855,7 +3922,8 @@ def _pre_push(root: Path, remote: str, refs: str,
             kind = "unreadable object"
         if kind != "commit":
             print(_ascii(f"pre-push REFUSED: {local_ref} publishes a {kind}, not a commit, and "
-                         f"no scan reads one. Push a tag that points at a commit."))
+                         f"no scan reads one. Push a tag that points at a commit.",
+                         strict=True))
             worst = 1
             continue
         if remote_sha.strip("0"):
@@ -3904,10 +3972,24 @@ def main(argv: list[str]) -> int:
     try:
         args = parse_args(argv)
     except UsageError as exc:
-        print(f"{_ascii(str(exc))}\n\n{USAGE}", file=sys.stderr)
+        print(f"{_ascii(str(exc), strict=True)}\n\n{USAGE}", file=sys.stderr)
         return 2
     if args.help:
         print(USAGE)
+        return 0
+
+    if args.probe:
+        # `--check-hooks` runs a hook's exact command line plus this flag. It answers without
+        # reading a repository, so a staged leak cannot make an active hook look inactive, and an
+        # engine too old to know the flag refuses it (exit 2) and is reported inactive.
+        # The distribution metadata, not `from kw_common import __version__`: this module imports
+        # no sibling (tests/test_isolation.py), so it can be copied alone.
+        from importlib import metadata
+        try:
+            version = metadata.version("kw-common")
+        except metadata.PackageNotFoundError:
+            version = "unknown"
+        print(f"hook probe ok: kw-common {version}")
         return 0
 
     if args.selftest:
@@ -3921,7 +4003,7 @@ def main(argv: list[str]) -> int:
     except UsageError as exc:
         # The same exit and the same shape as a bad flag: `USAGE` promises 2 for a usage error,
         # and pointing `--repo` at the wrong directory is one (#12).
-        print(f"{_ascii(str(exc))}\n\n{USAGE}", file=sys.stderr)
+        print(f"{_ascii(str(exc), strict=True)}\n\n{USAGE}", file=sys.stderr)
         return 2
     if args.install_hooks:
         return install_hooks(root)
@@ -3934,7 +4016,7 @@ def main(argv: list[str]) -> int:
     try:
         apply_config(resolve_config(root, args.config))
     except ConfigError as exc:
-        print(_ascii(str(exc)), file=sys.stderr)
+        print(_ascii(str(exc), strict=True), file=sys.stderr)
         return 2
 
     compiled = compile_patterns()

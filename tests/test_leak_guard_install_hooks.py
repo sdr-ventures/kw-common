@@ -162,7 +162,7 @@ def test_check_FAILS_when_the_interpreter_a_hook_names_is_gone(tmp_path: Path) -
     hook.write_bytes(guard._hook_text("pre-commit", (tmp_path / "no" / "python").as_posix())
                      .encode())
     res = _guard(repo, "--check-hooks")
-    assert res.returncode == 1 and "cannot import kw_common.leakguard" in res.stdout, res.stdout
+    assert res.returncode == 1 and "cannot run" in res.stdout, res.stdout
     # ...and git, running that hook, REFUSES rather than passing.
     (repo / "notes.md").write_bytes(b"clean\n")
     _git(repo, "add", "notes.md")

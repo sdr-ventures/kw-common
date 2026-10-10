@@ -92,30 +92,73 @@ jobs:
       #
       # The range scan reads what each COMMIT added, so it sees that. Catching it before the
       # merge is the difference between an amend and a history rewrite across every clone.
-      - name: Scan the commits being published
+      # ⭐ THE SAME STEP AS THE REUSABLE WORKFLOW, copied byte for byte (`leak-guard.yml`): the check
+      # this repository runs on itself and the one every consumer runs must not be two behaviours.
+      # A new branch is scanned from the default branch, not just its tip. This workflow only
+      # triggers on pushes to `main`, so the tag and new-branch arms are unreachable here; they are
+      # carried so the two scripts stay identical, and
+      # `tests/test_workflow_steps.py::test_ci_scans_exactly_what_the_reusable_workflow_scans`
+      # is what fails when they drift.
+      - name: Scan what this event publishes
         env:
           EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
           PR_BASE: ${{ github.event.pull_request.base.sha }}
           PR_HEAD: ${{ github.event.pull_request.head.sha }}
           PUSH_BEFORE: ${{ github.event.before }}
-          PUSH_HEAD: ${{ github.sha }}
+          HEAD_SHA: ${{ github.sha }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           set -eu
           z40=0000000000000000000000000000000000000000
-          if [ "$EVENT" = "pull_request" ]; then
-            range="$PR_BASE..$PR_HEAD"
-          elif [ -z "$PUSH_BEFORE" ] || [ "$PUSH_BEFORE" = "$z40" ]; then
-            # The branch was created by this push, so there is no previous tip. Scan the commit
-            # itself rather than reporting clean — "I could not work out a range" must never be
-            # a pass, which is the one failure mode a leak guard cannot have.
-            if git rev-parse --verify -q "${PUSH_HEAD}^" >/dev/null; then
-              range="${PUSH_HEAD}^..${PUSH_HEAD}"
-            else
-              range="$PUSH_HEAD"   # root commit: scan all of it
-            fi
-          else
-            range="$PUSH_BEFORE..$PUSH_HEAD"
-          fi
+          case "$EVENT:$REF" in
+            pull_request*)
+              range="${PR_BASE}..${PR_HEAD}" ;;
+            push:refs/tags/*)
+              # ⭐ THE RANGE NAMES THE TAG REF, so the annotation — free prose, published on the
+              # release page — is read too. Every tag at this commit is excluded from the base
+              # search, or a twin tag becomes the base and the range collapses to nothing.
+              excludes=""
+              for t in $(git tag --points-at "$HEAD_SHA"); do excludes="$excludes --exclude=$t"; done
+              # shellcheck disable=SC2086
+              base="$(git describe --tags --abbrev=0 --match 'v[0-9]*' $excludes "$HEAD_SHA" \
+                      2>/dev/null || true)"
+              # ⚠️ The base is PEELED to its commit: the guard reads a tag object for every revision
+              # the range names, so a bare `<base tag>..` would re-scan the previous release's
+              # annotation, which this push does not publish.
+              range="$REF"
+              if [ -n "$base" ] && [ "$(git rev-list --count "${base}..${REF}")" -gt 0 ]; then
+                range="${base}^{commit}..${REF}"
+              else
+                # ⭐ WIDER, NEVER EMPTY, AND SAID OUT LOUD. With no earlier `v[0-9]*` tag (the first
+                # release) the tag publishes every commit reachable from it, so that is what is
+                # scanned; an empty range is never read as clean. Every tag at this commit is
+                # excluded above, so a base that exists always has commits after it - the empty
+                # case here IS the no-base case, and a history older than the guard can turn the
+                # first tag red. docs/ADOPTION.md says so.
+                echo "::notice::no earlier v[0-9]* tag to scan from: scanning ALL history reachable from ${REF}"
+              fi ;;
+            push:*)
+              if [ -z "$PUSH_BEFORE" ] || [ "$PUSH_BEFORE" = "$z40" ]; then
+                # ⛔ A branch created by this push publishes EVERY commit the default branch does
+                # not have, not just its tip: a leak added and removed on it would otherwise pass.
+                # Scan from the default branch; without one to compare against — or when this IS
+                # the default branch's first push, which publishes everything — all history.
+                default="refs/remotes/origin/${DEFAULT_BRANCH:-}"
+                range="$HEAD_SHA"
+                if [ -n "${DEFAULT_BRANCH:-}" ] && [ "$REF" != "refs/heads/${DEFAULT_BRANCH}" ] \
+                    && git rev-parse --verify -q "$default" >/dev/null; then
+                  range="${default}..${HEAD_SHA}"
+                else
+                  echo "::notice::no default branch to compare against, or this IS its first push: scanning ALL history reachable from ${HEAD_SHA}"
+                fi
+              else
+                range="${PUSH_BEFORE}..${HEAD_SHA}"
+              fi ;;
+            *)
+              # Any other trigger (a schedule, a manual run): everything reachable, the widest scan.
+              range="$HEAD_SHA" ;;
+          esac
           echo "range: $range"
           kw-leak-guard --range "$range"
 

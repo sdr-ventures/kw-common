@@ -9,7 +9,55 @@ exported symbol that changed. ⛔ It does NOT name the consumers that need a cod
 repository is public, and honouring that older promise would publish the fleet's inventory at
 exactly the moment the release notes are read most widely.
 
-## [1.7.0] - Unreleased
+## [1.7.1] - Unreleased
+
+**Closes the gaps the first seven adoptions of the 1.7.0 leak guard found.** No name in any
+module's `__all__` was removed or changed in signature, and a consumer on `v1.7.0` changes no
+input to bump — PATCH.
+
+### Fixes
+
+* The reusable `leak-guard.yml` job carries `timeout-minutes: 30`. A caller cannot set one on a job
+  that calls a reusable workflow, so every consumer's check ran to GitHub's six-hour default when
+  git or pip hung.
+* A revision range, ref or remote name an OPERATOR typed is redacted exhaustively before it is
+  printed. A shape butted against `.`, `..`, `_`, `:` or a digit (`main..<addr>`, `ref:<ipv6>`) was
+  refused by the patterns' own boundaries and echoed intact. A string over 200 characters is
+  withheld rather than echoed. Findings about repository content are unchanged.
+* `--check-hooks` runs each hook's own command line (`python -I -m kw_common.leakguard
+  --pre-commit` / `--pre-push`, plus the new `--probe`, which answers without reading a repository)
+  instead of importing the module. An interpreter whose installed engine predates the hook flags,
+  or cannot run the module as `__main__`, imported cleanly and was reported active while git
+  refused every commit. `--probe` is a modifier of `--pre-commit` / `--pre-push` only; an engine
+  older than 1.7.1 rejects it, which `--check-hooks` reports as inactive.
+* When a tag, a new branch or a manual run has nothing to scan from, the reusable workflow still
+  scans everything reachable (never an empty range read as clean) and now says so in the log.
+  `ci.yml`'s range step is the reusable workflow's, byte for byte: a new branch is scanned from the
+  default branch instead of its tip only.
+* `v<version>rc0` (and `rc00`, `RC1`) is refused by `release.yml` and publishes nothing; this was
+  already so in 1.7.0 and is now pinned by a test.
+
+### Documentation
+
+* `docs/ADOPTION.md`: the verification block compares with `origin/<base>` (the PR's base branch —
+  the integration branch of a two-environment repository), not `origin/main`; hooks are installed
+  from a virtual environment outside every worktree and any session scratch directory;
+  `git config --unset core.hooksPath` is one repository-wide setting that changes the shared
+  checkout and every worktree; the first `v*` tag and the default branch's first push scan the
+  whole history; the project-side check for private literals is a separate layer the pin's hooks do
+  not run; `.leakguard.json` is created only when a legitimate value trips a shape.
+* The 1.7.0 entry below was headed "Unreleased" after `v1.7.0` was cut.
+
+### Tests
+
+* Issue #6 (the v1.0.0 mutation survivors). Re-measured on 1.7.0: 34 of 41 mutations were already
+  caught. Now also pinned: a commented-out setting taking effect (item 10, which the earlier note
+  called pinned but only an incidental template test caught), the rollback's no-op write (2), each
+  `previous` guard alone (3), `notify`'s own opt-out gate (4), and the `makedirs`/`os.open` modes
+  that stand when `chmod` fails (1, POSIX only). Left unpinned on purpose: the blank-line skip in
+  `read_jsonl_tail` (8), which the broad `except` below it makes unobservable.
+
+## [1.7.0] - 2026-10-09
 
 **Makes the leak guard correct enough to be the one engine the fleet runs.** No name in any
 module's `__all__` was removed or changed in signature — MINOR.
