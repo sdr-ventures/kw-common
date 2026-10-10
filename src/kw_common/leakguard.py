@@ -62,11 +62,17 @@ WHY THIS EXISTS
     it) is invisible HERE and is caught THERE. Both layers are required; neither is sufficient.
 
 WHAT COUNTS HERE
-    RFC1918 and CGNAT addresses, `*.ts.net` tailnet names, `.lan`/`.local` host names, Unraid
-    `/mnt/<pool>` paths, freemail personal addresses, and bare UUIDs (Cloudflare
-    Access policy ids, tenant ids and app ids all take that shape, and all identify the estate).
-    Documentation ranges (RFC5737) and `example.com`/`.example` are the ALLOWED way to write an
-    address or a host in a doc, a comment, or a test.
+    RFC1918 and CGNAT addresses, unique-local and link-local IPv6 addresses, `*.ts.net` tailnet
+    names, `.lan`/`.local` and RFC 8375 `.home.arpa` host names, Unraid `/mnt/<pool>` paths,
+    freemail personal addresses, Windows profile paths, and bare UUIDs (Cloudflare Access policy
+    ids, tenant ids and app ids all take that shape, and all identify the estate). Documentation
+    ranges (RFC 5737, and RFC 3849's `2001:db8::/32` for IPv6) and `example.com`/`.example` are the
+    ALLOWED way to write an address or a host in a doc, a comment, or a test.
+
+    ⛔ A FINDING NAMES THE SHAPE, THE FILE AND THE LINE — NEVER THE MATCHED VALUE. Printing it would
+    republish the value in every CI log, and a public repository's CI log is as public as its code.
+    Every printed string also passes through `_ascii`, which redacts any shape left in a path, a
+    revision range or the repository root.
 
     ⚠️ EVERY EXAMPLE IN THIS FILE IS SYNTHETIC — `.invalid` hosts (RFC 2606), out-of-range
     octets and reserved documentation ranges exercise the same patterns and leak nothing.
@@ -88,10 +94,22 @@ KNOWN LIMITS (state them; do not pretend to coverage)
         `<label>.lan.` at a sentence end are the same string shape and no regex separates them,
         so this takes the fail-quiet side deliberately. Do not "fix" it.
       * A `.gitignore` glob ending immediately after the label — `*config.local*` — DOES fire, a
-        real false positive (issue #32). The right bound rejects a following LABEL, and `*` is not
-        one. Not repaired here because the repair touches the frozen pattern above; pinned as
-        known behaviour by a test so it is discoverable rather than folklore.
-      * THE TREE SCAN READS THE WORKTREE, and that is still true — but it is no longer a GAP,
+        real false positive (consumer#237). Rejecting a following `*` was tried and reverted: the
+        Markdown emphasis `**<host>.lan**` and `*<host>.local*` is the same string, and that is a
+        real host. Allow the literal in `.leakguard.json`. Pinned by a test.
+      * IPv6 is matched for the two PRIVATE ranges only — unique-local `fc00::/7` and link-local
+        `fe80::/10`, each as a full eight-group address or a `::`-elided one. Deprecated site-local
+        `fec0::/10`, an IPv4-mapped tail (`::ffff:<v4>`, whose v4 half the IPv4 patterns judge on
+        its own) and global unicast are not; a global address is the project-side guard's job, as
+        a custom pool name is. The range bases written AS ranges (`fd00::/8`) are allowed.
+        Two private spellings are MISSED, because the left bound that keeps the pattern off longer
+        hex-and-colon runs cannot tell a `<word>:` prefix from one more hextet: an address straight
+        after a colon (`--add-host db:<ula>`, SPF `ip6:<ula>`), and a six-hextet form ending in an
+        embedded IPv4 (`<ula-prefix>:1:2:3:4:5:<v4>`, whose v4 half is judged alone).
+      * THE TREE SCAN READS THE WORKTREE — except for a file with a `working-tree-encoding`
+        attribute whose checkout is NUL-bearing, where it reads the INDEX blob (#31), so an
+        unstaged edit to such a file is seen only once it is added. Otherwise that is still true
+        — but it is no longer a GAP,
         because it is no longer the only thing the commit-time layer runs. `git add cfg.txt` while
         it holds a leak, then overwrite cfg.txt with a clean version and do not re-stage: the tree
         scan is honestly clean and the index — and so the commit — still carries the leak (issue
@@ -207,9 +225,11 @@ USAGE
 
     `python -m kw_common.leakguard ...` is identical and equally supported.
 
-    As a pre-commit + pre-push hook, a repository points `core.hooksPath` at its own hooks and
-    calls the command above. The hooks are the CONSUMER's, not this package's: they are how a
-    repository wires the guard up, and they differ per repository.
+    As a pre-commit + pre-push hook: `kw-leak-guard --install-hooks` writes both into the
+    repository's git directory (see the hooks section near the end of this file), and refuses
+    while `core.hooksPath` is set to any value, empty included, so git does not run hooks from
+    this repository's git directory. A hooks path inside the working tree is also a hook a
+    checkout can remove (#17).
 
 IF IT FIRES ON SOMETHING LEGITIMATE
     Add the exact literal to `allow_literals` in the SCANNED REPOSITORY's `.leakguard.json`, with
@@ -288,6 +308,23 @@ PATTERNS: list[tuple[str, str]] = [
     # Carrier-grade NAT 100.64.0.0/10 — the range Tailscale assigns from.
     ("cgnat address",
      r"(?<![\w.])100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}(?![\w]|\.\d)"),
+    # ⭐ THE IPv6 HALF OF THE TWO RANGES ABOVE (consumer#245): unique-local `fc00::/7` (the range a
+    # home network and Tailscale's IPv6 addressing both draw from) and link-local `fe80::/10`
+    # (whose EUI-64 tail is derived from a NIC's MAC). Global unicast is not a private shape and is
+    # not matched; `2001:db8::/32` (RFC 3849) is the documented way to write an IPv6 example, the
+    # same role RFC 5737 plays for IPv4.
+    #
+    # ⚠️ PRECISE BY GRAMMAR, NOT BY A LOOSE HEX-AND-COLON RUN. Hex-and-colon text is everywhere — a
+    # timestamp, a MAC address (`fd:12:34:…`, two-digit groups), a `sha256:` digest, a YAML
+    # `key: value` — so the first group must be a full FOUR-digit `fcXX`/`fdXX`/`fe8X`-`febX`, and
+    # the address must be either all eight groups or carry the `::` elision. Bounded on `\w` and
+    # `:` both sides, so it cannot start or stop inside a longer hex/colon run, and every
+    # repetition is fixed-width, so it is linear (the backtracking test runs over it like every
+    # other pattern). A zone index (`%eth0`) and a URL's `[…]`/`/48` sit outside the bound.
+    ("private IPv6 (ULA / link-local)",
+     r"(?<![\w:])(?:f[cd][0-9a-f]{2}|fe[89ab][0-9a-f])"
+     r"(?:(?::[0-9a-f]{1,4}){7}"
+     r"|(?::[0-9a-f]{1,4}){0,6}::(?:[0-9a-f]{1,4}(?::[0-9a-f]{1,4}){0,5})?)(?![\w:])"),
     # ⚠️ Left-bounded, and with `(?<![\w-])` specifically — NOT `(?<![\w.-])`.
     # `\b[\w-]+\.` was an instance of the unbounded-leading-class defect this file has been bitten
     # by three times: `-` is in the class but is not a word character, so `\b` held at every
@@ -311,7 +348,19 @@ PATTERNS: list[tuple[str, str]] = [
     # guard that fires on the approved placeholder convention is a guard people switch off. There
     # is a `_MUST_PASS` case pinning this. If an estate ever genuinely adopts `.internal`, it
     # belongs in the project-side real-literal guard, not here.
+    #
+    # ⛔ `*` IS NOT IN THE RIGHT BOUND; adding it was tried and REVERTED (consumer#237). It silenced
+    # the `.gitignore` glob `*config.local*` — and equally the Markdown emphasis `*printer-b.local*`
+    # and `**nas-a.lan**`, a real host in a README or a table cell. A glob and emphasis are the same
+    # string, and content is the ONLY surface that catches a `.local` host, so the glob stays a
+    # stated false positive (KNOWN LIMITS) with `allow_literals` as its remedy.
     ("private lan domain", r"(?<![\w-])[\w-]+\.(?:lan|local)(?![\w.-])"),
+    # ⭐ RFC 8375's `home.arpa` (consumer#245) — the standards-track spelling of what `.lan` is by
+    # convention, and what a home router hands out as its search domain. A LABEL must precede it,
+    # so prose naming the zone itself (`RFC 8375 reserves home.arpa`) does not fire. The right
+    # bound allows a following dot for the reason the path/message `.lan` bound does: no filename
+    # convention ends in `.home.arpa`, so a sentence-final `<host>.home.arpa.` is a host.
+    ("home network domain (RFC 8375)", r"(?<![\w-])[\w-]+\.home\.arpa(?![\w-])"),
     # Unraid share/pool roots. The PATH is what identifies an estate's storage layout; the bare
     # words are ordinary technical English (`__pycache__`, `--not --remotes`) and matching those
     # produced false failures, so this is anchored to `/mnt/`.
@@ -631,6 +680,11 @@ ALLOW_SPANS: tuple[str, ...] = (
     # (`…-000000000001`) is outside the span and still fires, which `_MUST_FAIL` pins.
     r"(?<![0-9a-f])0{8}-0{4}-0{4}-0{4}-0{12}(?![0-9a-f])",
     r"(?<![0-9a-f])f{8}-f{4}-f{4}-f{4}-f{12}(?![0-9a-f])",
+    # ⭐ THE IPv6 RANGE BASES WRITTEN AS RANGES — `fc00::/7`, `fd00::/8`, `fe80::/10` — which is how
+    # documentation (this package's own included) names what the IPv6 pattern covers. A range base
+    # with a prefix length identifies nobody. Only the all-zero base plus `/<len>`, left-bounded the
+    # same way the deny pattern is: `fd00::1`, `fe80::1` and any real `/48` still fire.
+    r"(?<![\w:])f(?:c00|d00|e80)::/\d{1,3}(?!\d)",
 )
 
 # Text-bearing formats are NEVER skipped — an SVG is XML and carries <title>/<desc>/href, and
@@ -976,7 +1030,7 @@ def apply_config(config: GuardConfig) -> None:
     paragraph overstated it and "cannot be bypassed" is the claim that never survives a round.
 
     THE CHECK IS CORPUS-SHAPED. It refuses a literal that stops one of the SAMPLES being caught,
-    and the corpus is finite: 32 content samples across 8 labels, 9 paths, 8 messages. So
+    and the corpus is finite: 44 content samples across 10 labels, 9 paths, 8 messages. So
     `"/mnt/user"` is refused because a pool-path sample spells that pool — and `"/mnt/cache"`,
     `"/mnt/disk9"` and `"tailnet-acme.ts.net"` are ACCEPTED, because no sample spells those.
     Measured, all four.
@@ -1332,17 +1386,37 @@ def gitlinks(root: Path) -> set[str]:
 
 def _index_modes(root: Path) -> dict[str, str]:
     """Repo-relative path -> git MODE for every index entry (`100644`, `100755`, `120000`,
-    `160000`), asked of `git ls-files -s` once. Shared by the submodule filter and the symlink
-    branch of the tree scan, so the two read one listing rather than two."""
+    `160000`). See `_index_entries`."""
+    return {path: mode for path, (mode, _) in _index_entries(root).items()}
+
+
+def _index_entries(root: Path) -> dict[str, tuple[str, str]]:
+    """Repo-relative path -> (git MODE, stage-0 object SHA), asked of `git ls-files -s` once.
+
+    Shared by the submodule filter, the symlink branch of the tree scan and the batched read of
+    staged-but-absent files, so all three read one listing rather than three. The SHA is `""` for
+    an UNMERGED path (no stage-0 entry, so no single blob a commit would record) and for a key two
+    entries share once decoded (see the loop).
+    """
     out = subprocess.run(["git", "ls-files", "-s", "-z"], cwd=root, capture_output=True,
                          check=True, timeout=_GIT_TIMEOUT_S)
-    modes: dict[str, str] = {}
-    for entry in out.stdout.decode("utf-8", errors="replace").split("\0"):
-        if not entry:
+    entries: dict[str, tuple[str, str]] = {}
+    for raw in out.stdout.split(b"\0"):
+        if not raw:
             continue
+        # ⛔ A DECODED KEY THAT TWO INDEX ENTRIES SHARE GETS NO SHA AND NO MODE. Decoded with
+        # `errors="replace"`, two different byte paths (`a\xfe.txt`, `a\xff.txt`, or one of them
+        # and a valid path holding U+FFFD) become ONE key: the batched read of an absent file
+        # then scanned whichever blob was listed last under the other's name, and a gitlink mode
+        # listed last made a leaking file look like a submodule. Either way a committed leak
+        # exited 0. No SHA and no mode means the file is reported unreadable: fail closed. A
+        # non-UTF-8 path that collides with nothing keeps both, so it is still read and scanned.
+        entry = raw.decode("utf-8", errors="replace")
         meta, _, path = entry.partition("\t")
-        modes[path] = meta.split(" ", 1)[0]
-    return modes
+        mode, sha, stage = ([*meta.split(" "), "", ""])[:3]
+        collided = stage == "0" and path in entries
+        entries[path] = ("", "") if collided else (mode, sha if stage == "0" else "")
+    return entries
 
 
 def compile_patterns() -> list[tuple[str, re.Pattern[str]]]:
@@ -1405,8 +1479,27 @@ def _ascii(s: str) -> str:
     and not to the interpolated PATHS, so one tracked file with an accented or CJK name crashed
     the scan just as it was listing the finding. Exit stayed 1, so it failed closed; the operator
     simply never got to see WHICH file leaked.
+
+    ⛔⛔ AND IT NEVER PRINTS A MATCHED LITERAL. A finding names the SHAPE, the file and the line —
+    the value itself would otherwise be republished in every CI log, and a public repository's CI
+    log is as public as its code. The finding strings no longer carry the match, but a PATH, a
+    revision range or the repository root can itself carry one (a `<path>` finding IS a path with
+    a leak in it), so every printed string is redacted here, at the one place they all pass
+    through: each span any content or path pattern matches becomes `<its label>`. Over-redaction
+    is harmless; it ignores the allow-lists on purpose.
     """
+    for label, rx in _redaction_patterns():
+        s = rx.sub(f"<{label}>", s)
+    # A path may now carry a raw control byte (a decoded C-quoted name): escape every one but
+    # the newline the multi-line messages use, so ESC or CR cannot rewrite a finding line.
+    s = re.sub(r"[\x00-\x09\x0b-\x1f\x7f]", lambda m: f"\\x{ord(m.group()):02x}", s)
     return s.encode("ascii", "backslashreplace").decode("ascii")
+
+
+@functools.cache
+def _redaction_patterns() -> tuple[tuple[str, re.Pattern[str]], ...]:
+    """Content patterns first, then the PATH set (its looser `.lan` bound), for `_ascii`."""
+    return (*compile_patterns(), *path_patterns())
 
 
 def tracked_files(root: Path) -> list[Path]:
@@ -1676,13 +1769,12 @@ def _unparsed_header(tail: str) -> str:
     # ⚠️ THE REMEDIATION TRAVELS WITH THE MARKER. This is not a file that failed to decode, so the
     # generic "add a binary suffix / commit it as UTF-8" advice printed for unreadable files is
     # wrong for it in both halves, and an operator following it stays red with nothing to change.
-    # git C-quotes any path containing a quote, a backslash or a control byte REGARDLESS of
-    # `core.quotePath` (which governs non-ASCII only), and such a header cannot be reconstructed.
+    # A C-quoted header is decoded (`_c_unquote`), so what still lands here is a header git's own
+    # grammar does not produce — a rename that escaped `--no-renames`, or a malformed escape.
     return _MARKER_SIGIL + (
         f"<a 'diff --git' header this cannot resolve to one path, so nothing in that diff was "
-        f"attributed or scanned: {tail!r} - if the path contains a quote, a backslash or a "
-        f"control character, git C-quotes it and it cannot be read here: rename it, or review "
-        f"that commit by hand before pushing>")
+        f"attributed or scanned: {tail!r} - review that commit by hand before pushing, and "
+        f"report the header shape as a guard defect>")
 
 
 def _is_marker(p: str) -> bool:
@@ -1708,12 +1800,61 @@ def _header_path(tail: str) -> str:
     both sides are the SAME path, so `a/{p} b/{p}` determines `p` by LENGTH — no delimiter has to
     be guessed. The reconstruction is then verified byte-for-byte, which is what makes a tail this
     cannot explain fail CLOSED instead of producing a wrong-but-plausible answer.
+
+    ⭐ A C-QUOTED TAIL IS DECODED, NOT REFUSED (unraid-templates#37). git quotes a path holding a
+    `"`, a `\\` or a control byte whatever `core.quotePath` says —
+    `"a/quo\\"te.txt" "b/quo\\"te.txt"` — and those are legal, ordinary filenames on every Linux
+    runner. Refusing them made a clean text file block the commit. The same length-and-verify
+    reconstruction runs on the QUOTED body, then `_c_unquote` decodes git's escapes; anything it
+    cannot decode is still the marker.
     """
+    if tail.startswith('"'):
+        if len(tail) < 9 or (len(tail) - 9) % 2:
+            return _unparsed_header(tail)
+        n = (len(tail) - 9) // 2
+        q = tail[3:3 + n]
+        unquoted = _c_unquote(q) if tail == f'"a/{q}" "b/{q}"' else None
+        return _unparsed_header(tail) if unquoted is None else unquoted
     if len(tail) < 5 or (len(tail) - 5) % 2:
         return _unparsed_header(tail)
     n = (len(tail) - 5) // 2
     p = tail[2:2 + n]
     return p if tail == f"a/{p} b/{p}" else _unparsed_header(tail)
+
+
+# git's `quote_c_style` escapes (quote.c): the named ones, plus `\ooo` octal for any other byte.
+_C_ESCAPES = {"a": 0x07, "b": 0x08, "t": 0x09, "n": 0x0A, "v": 0x0B, "f": 0x0C, "r": 0x0D,
+              '"': 0x22, "\\": 0x5C}
+
+
+def _c_unquote(body: str) -> str | None:
+    """The path inside a C-quoted string (quotes already stripped), or `None` if malformed.
+
+    Escapes are BYTES, not characters — `\\303\\251` is one UTF-8 `é` — so the bytes are collected
+    and decoded once, the same `errors="replace"` decode `_git` gives every other path. An
+    unescaped `"` or a dangling `\\` cannot occur in git's output, and either one returns `None`
+    so the caller fails closed rather than guessing.
+    """
+    out = bytearray()
+    i = 0
+    while i < len(body):
+        c = body[i]
+        if c == '"':
+            return None
+        if c != "\\":
+            out += c.encode("utf-8")
+            i += 1
+            continue
+        esc = body[i + 1:i + 2]
+        if esc in _C_ESCAPES:
+            out.append(_C_ESCAPES[esc])
+            i += 2
+        elif re.fullmatch(r"[0-3][0-7]{2}", body[i + 1:i + 4]):
+            out.append(int(body[i + 1:i + 4], 8))
+            i += 4
+        else:
+            return None
+    return out.decode("utf-8", errors="replace")
 
 
 def _plus_path(rest: str) -> str:
@@ -2022,8 +2163,8 @@ def changed_paths(root: Path, *revs: str) -> list[str]:
     ⭐ `--name-only -z`, NOT the paths `parse_diff` derives from the `diff --git` header. That is
     two sources for one fact only in appearance: they answer different questions and one of them
     is byte-exact. `-z` makes git emit RAW, NUL-terminated paths, so the entire C-quoting class
-    (issue #37 — a path holding a quote, a backslash or a control byte, which the header form
-    cannot reconstruct at all) simply does not arise here. A path scan built on the header would
+    (unraid-templates#37 — a path holding a quote, a backslash or a control byte, which the header
+    form must C-unquote) simply does not arise here. A path scan built on the header would
     have inherited that gap on day one.
 
     ⛔ `--diff-filter=d` — A DELETION PUBLISHES NOTHING NEW, and its path was already published by
@@ -2062,8 +2203,8 @@ def changed_paths(root: Path, *revs: str) -> list[str]:
 
 def scan_paths(shown: str, paths: list[str]) -> list[str]:
     """Findings in a set of PATH strings, labelled so they read as paths and not as file lines."""
-    return [f"{shown}<path> {rel}: {label}: {match!r}"
-            for rel in paths for label, match in scan_path(rel)]
+    return [f"{shown}<path> {rel}: {label}"
+            for rel in paths for label, _ in scan_path(rel)]
 
 
 def added_lines(root: Path, sha: str) -> ParsedDiff:
@@ -2205,8 +2346,8 @@ def scan_added(sha: str, parsed: ParsedDiff, compiled: list[tuple[str, re.Patter
     for path, lineno, content in parsed.added:
         if _is_self(path, root):
             continue
-        for _, label, match in scan_text(content, compiled, path):
-            findings.append(f"{sha[:10]} {_shown(path)}:{lineno}: {label}: {match!r}")
+        for _, label, _ in scan_text(content, compiled, path):
+            findings.append(f"{sha[:10]} {_shown(path)}:{lineno}: {label}")
     # `_shown` strips the marker sigil for display. `_skipped` is still asked of the RAW value: a
     # marker is not a path, so it matches no skip suffix and no self-exemption, which is the
     # answer wanted — an unattributable diff is never skipped.
@@ -2291,8 +2432,8 @@ def scan_identity(sha: str, ident: list[tuple[str, str]],
     """Findings in a commit's own author/committer metadata."""
     findings: list[str] = []
     for field, value in ident:
-        for _, label, match in scan_text(value, compiled):
-            findings.append(f"{sha[:10]} <{field}>: {label}: {match!r}")
+        for _, label, _ in scan_text(value, compiled):
+            findings.append(f"{sha[:10]} <{field}>: {label}")
     return findings
 
 
@@ -2327,8 +2468,8 @@ def commit_message(root: Path, sha: str) -> str:
 def scan_message(sha: str, message: str) -> list[str]:
     """Findings in a commit's own message. Uses the MESSAGE pattern set — see `scan_path` for why
     a surface that is not file content does not get the content bounds."""
-    return [f"{sha[:10]} <commit message>:{lineno}: {label}: {match!r}"
-            for lineno, label, match in scan_text(message, list(message_patterns()))]
+    return [f"{sha[:10]} <commit message>:{lineno}: {label}"
+            for lineno, label, _ in scan_text(message, list(message_patterns()))]
 
 
 def _rev_tokens(rev_range: str) -> list[str]:
@@ -2435,9 +2576,9 @@ def refs_being_published(root: Path, rev_range: str,
 
 def scan_tags(tags: list[tuple[str, str, str]]) -> list[str]:
     """Findings in tag objects. Uses the MESSAGE pattern set."""
-    return [f"{sha[:10]} <{kind}>:{lineno}: {label}: {match!r}"
+    return [f"{sha[:10]} <{kind}>:{lineno}: {label}"
             for kind, sha, body in tags
-            for lineno, label, match in scan_text(body, list(message_patterns()))]
+            for lineno, label, _ in scan_text(body, list(message_patterns()))]
 
 
 class RangeResult(NamedTuple):
@@ -2492,9 +2633,22 @@ _MUST_FAIL: list[tuple[str, str]] = [
     ("private IPv4 (RFC1918)", "The database lives at 192.168.77.77."),
     # 100.127.255.254 is the very top of the CGNAT block rather than any host anywhere.
     ("cgnat address", "agent reachable on 100.127.255.254:9999"),
+    # consumer#245: every form the issue measured walking through, all synthetic (random-looking ULA
+    # and EUI-64 bits; the Tailscale case is that product's published range, not a host).
+    ("private IPv6 (ULA / link-local)", "peer fd12:3456:789a:1::1 on the tunnel"),
+    ("private IPv6 (ULA / link-local)", "AGENT_URL=http://[fd12:3456:789a:1::1]:9999/mcp"),
+    ("private IPv6 (ULA / link-local)", "gateway fe80::1ff:fe23:4567:890a%eth0"),
+    ("private IPv6 (ULA / link-local)", "tailnet v6 fd7a:115c:a1e0::1"),
+    ("private IPv6 (ULA / link-local)", "seven hextets then elided: fd12:1:2:3:4:5:6:: here"),
+    ("private IPv6 (ULA / link-local)", "full form FD12:3456:789A:0001:0000:0000:0000:0001"),
+    ("home network domain (RFC 8375)", "ping printer.home.arpa"),
+    ("home network domain (RFC 8375)", "DB_HOST=db-a.home.arpa:5432"),
     ("tailnet name", "https://host-a.tailnet-example.ts.net/"),
     ("private lan domain", "AGENT_URL=http://host-a.lan:9999/mcp"),
     ("private lan domain", "ping printer-b.local"),
+    # Markdown emphasis — why `*` cannot join the right bound (consumer#237's revert).
+    ("private lan domain", "| **host-a.lan** | 10 |"),
+    ("private lan domain", "the printer is *printer-b.local*"),
     ("unraid pool path", 'Default="/mnt/apps/appdata/svc/data"'),
     ("unraid pool path", "Run from: cd /mnt/user/appdata/svc"),
     # The canonical Unraid ARRAY mount. The plural `disks` did not cover `/mnt/disk1`.
@@ -2552,6 +2706,20 @@ _MUST_PASS: list[str] = [
     # near-misses for the five patterns that had none. Each is a shape that LOOKS like its
     # pattern and must not fire, which is what fails if that pattern is ever widened.
     "cgnat neighbours 100.63.255.254 and 100.128.0.1 are outside the range",
+    # The IPv6 near-misses: hex-and-colon text that is not a private address. A timestamp, a MAC
+    # whose first octet is `fd`, a digest, a YAML key, a C++ scope, the RFC 3849 documentation
+    # prefix, loopback, global unicast, and the three range BASES written as ranges.
+    "started 12:34:56 on the 3rd",
+    "hwaddr fd:12:34:56:78:9a",
+    "image sha256:fd12ab34cd56ef7890fd12ab34cd56ef7890fd12ab34cd56ef7890fd12ab34cd",
+    "fdab: true",
+    "std::vector<int> v;",
+    "docs use 2001:db8::1 and 2001:db8:85a3::8a2e:370:7334",
+    "bind [::1]:8080 and :::80",
+    "ULA is fc00::/7 (in practice fd00::/8), link-local is fe80::/10",
+    # `.home.arpa` named as the zone itself, and the reverse-DNS zones that share its suffix.
+    "RFC 8375 reserves home.arpa; see also the .home.arpa zone",
+    "PTR 1.2.0.192.in-addr.arpa and ip6.arpa",
     'import helper from "./net.ts" then re-export',
     "store it under /mnt/POOL/appdata/runner-REPO/docker",
     "contact noreply@example.com or support@github.com",
@@ -2587,6 +2755,7 @@ _MUST_FAIL_COMBINED = "# see example.com; real host is host-a.private-example.la
 _MUST_FAIL_ADJACENT: list[tuple[str, str]] = [
     ("private IPv4 (RFC1918)", "AGENT=192.168.77.77.example.com"),
     ("cgnat address", "agent on 100.127.255.254.example.com"),
+    ("private IPv6 (ULA / link-local)", "AGENT=fd12:3456:789a:1::1.example.com"),
     ("tailnet name", "https://host-a.tailnet-example.ts.net.example.net/"),
     ("unraid pool path", "/mnt/user.example.com"),
     ("personal mail address", "mail someone@gmail.invalid.example.org"),
@@ -2797,7 +2966,8 @@ def selftest(compiled: list[tuple[str, re.Pattern[str]]]) -> int:
 
 # ------------------------------------------------------------------------ the command line
 USAGE = """usage: kw-leak-guard
-           [--selftest | --staged | --range <revision-range>] [--repo <path>]
+           [--selftest | --staged | --range <revision-range> | --pre-commit |
+            --pre-push <remote> | --install-hooks | --check-hooks] [--repo <path>]
            [--config <path>]
 
   (no arguments)              scan the tracked working TREE
@@ -2805,6 +2975,12 @@ USAGE = """usage: kw-leak-guard
   --staged                    scan what is in the INDEX - what `git commit` would record
   --range <A..B>              scan the lines ADDED by every commit in the range
   --range=<A..B>              the same, joined form
+  --pre-commit                the pre-commit hook: the TREE scan, then the --staged scan
+  --pre-push <remote>         the pre-push hook: reads git's ref list on stdin and range-scans
+                              every ref the push publishes
+  --install-hooks             write the two hooks into this repository's git directory, where
+                              no checkout can remove them, calling THIS interpreter
+  --check-hooks               exit 0 only if git will run both installed hooks
   --repo <path>               the repository to scan (default: the one containing $PWD)
   --config <path>             this repository's allowances (default: <repo>/.leakguard.json
                               if it exists; without one, NOTHING is excused)
@@ -2832,6 +3008,10 @@ class Args(NamedTuple):
     # putting a new one in the middle silently rebinds every positional `Args(...)` call and
     # every test that builds one — a change with no error message anywhere.
     config: str | None = None
+    pre_commit: bool = False
+    pre_push: str | None = None
+    install_hooks: bool = False
+    check_hooks: bool = False
 
 
 def _value_for(flag: str, argv: list[str], i: int) -> str:
@@ -2865,6 +3045,10 @@ def parse_args(argv: list[str]) -> Args:
     want_help = False
     staged = False
     config: str | None = None
+    pre_commit = False
+    pre_push: str | None = None
+    install_hooks = False
+    check_hooks = False
     i = 0
     while i < len(argv):
         arg = argv[i]
@@ -2874,6 +3058,17 @@ def parse_args(argv: list[str]) -> Args:
             selftest = True
         elif arg == "--staged":
             staged = True
+        elif arg == "--pre-commit":
+            pre_commit = True
+        elif arg == "--pre-push":
+            # An EMPTY remote is allowed: it is what the shim passes when the hook is run by hand,
+            # and it widens the scan (nothing is excluded) rather than narrowing it.
+            pre_push = _value_for("--pre-push", argv, i)
+            i += 1
+        elif arg == "--install-hooks":
+            install_hooks = True
+        elif arg == "--check-hooks":
+            check_hooks = True
         elif arg == "--range":
             rev_range = _value_for("--range", argv, i)
             i += 1
@@ -2913,10 +3108,13 @@ def parse_args(argv: list[str]) -> Args:
     # this file has been bitten by repeatedly. Each combination would otherwise run ONE of the two
     # scans the caller asked for and report success — the silent substitution `parse_args` exists
     # to make impossible.
-    if sum((selftest, rev_range is not None, staged)) > 1:
-        raise UsageError("--selftest, --range and --staged do different things; "
+    modes = (selftest, rev_range is not None, staged, pre_commit, pre_push is not None,
+             install_hooks, check_hooks)
+    if sum(modes) > 1:
+        raise UsageError("--selftest, --range, --staged, --pre-commit, --pre-push, "
+                         "--install-hooks and --check-hooks do different things; "
                          "run them one at a time")
-    if want_help and (selftest or staged or rev_range is not None):
+    if want_help and any(modes):
         # `--range A..B --help` printed the usage and exited 0 — an accepted argument combination
         # that substitutes "no scan" for a scan and reports success. That is the same shape as the
         # ignored-argument defect, just harder to reach, so it is an error rather than a silent
@@ -2929,7 +3127,13 @@ def parse_args(argv: list[str]) -> Args:
         # config that stops a deny case being caught, and that runs on a real scan.
         raise UsageError("--selftest measures the shipped patterns, not a repository's config; "
                          "run a scan to have --config take effect")
-    return Args(selftest, rev_range, repo, want_help, staged, config)
+    if config is not None and (install_hooks or check_hooks):
+        # The installed hooks read `.leakguard.json` from the index on every run, like any scan;
+        # a `--config` here would be silently dropped rather than baked in.
+        raise UsageError("--install-hooks and --check-hooks scan nothing, so --config would be "
+                         "ignored; the hooks read the repository's own .leakguard.json")
+    return Args(selftest, rev_range, repo, want_help, staged, config, pre_commit, pre_push,
+                install_hooks, check_hooks)
 
 
 def _link_text(path: Path) -> bytes:
@@ -2966,9 +3170,49 @@ def _scan_tree(root: Path, compiled: list[tuple[str, re.Pattern[str]]]) -> int:
     examined = 0
     # Submodule entries, resolved once. See `gitlinks` for why they cannot be told apart from a
     # staged-but-deleted file by catching exceptions.
-    modes = _index_modes(root)
+    entries = _index_entries(root)
+    modes = {rel: mode for rel, (mode, _) in entries.items()}
     submodules = {rel for rel, mode in modes.items() if mode.startswith("160000")}
     tracked = tracked_files(root)
+    # Tracked files missing from the worktree, read from the INDEX in one batch after the walk.
+    absent: list[str] = []
+
+    def consume(rel: str, raw: bytes, absent_from_worktree: bool) -> None:
+        """Scan one tracked file's bytes, from the worktree or from the index alike."""
+        nonlocal scanned
+        # ⭐⭐ THE SECOND HALF OF THE SELF-EXEMPTION, and it needs the BYTES, which is why it
+        # cannot live beside the path test below. An INSTALLED guard is not inside the
+        # repository it scans, so the path test never fires there — and the repository that
+        # OWNS this engine keeps its source as an ordinary tracked file, full of synthetic
+        # deny cases. This asks "are these my own bytes", which no other file can answer yes
+        # to and no configuration can widen. See `_is_self`.
+        if _is_self(rel, root, raw):
+            return
+        # ⭐⭐ ONE DECISION FOR BOTH SOURCES OF `raw` — the worktree read and the staged blob.
+        # `_reading` asks, in order: does the name's binary claim hold in git's own window (skip
+        # in silence), does it decode (report it if not, unless the name hints binary and git
+        # would serve it as text anyway), does it carry a NUL (report it — the #242 BOM-less
+        # UTF-16 posture — unless the name hints binary, in which case the NUL lines are blanked
+        # and the rest is scanned, exactly as the range scan reads the same file). Both sources
+        # used to answer those questions in two places, and the consumer that shipped this window
+        # measured its two sources reaching opposite verdicts on identical bytes.
+        read = _reading(rel, raw, absent_from_worktree=absent_from_worktree)
+        if read.unreadable and not absent_from_worktree:
+            # #31: a `working-tree-encoding` checkout is NUL-bearing by design; see
+            # `_working_tree_encoded`. Only a worktree read can be in that state — an absent file's
+            # bytes already ARE the blob.
+            read = _working_tree_encoded(root, rel) or read
+        if read.unreadable:
+            undecodable.append(read.unreadable)
+            return
+        if read.partial:
+            partial.append(read.partial)
+        if read.text is None:
+            return
+        scanned += 1
+        findings.extend(f"{rel}:{n}: {label}"
+                        for n, label, _ in scan_text(read.text, compiled, rel))
+
     for path in tracked:
         rel = path.relative_to(root).as_posix()
         # ⭐ THE PATH IS SCANNED FIRST, AND FOR EVERY TRACKED FILE — before any skip, any
@@ -2980,8 +3224,8 @@ def _scan_tree(root: Path, compiled: list[tuple[str, re.Pattern[str]]]) -> int:
         # LOOSER `.lan` bound than file content does — see PATH_PATTERN_OVERRIDES. It was NOT
         # caught when this comment first asserted it; the claim came before the behaviour.)
         examined += 1
-        findings += [f"{rel}: <path>: {label}: {match!r}"
-                     for label, match in scan_path(rel)]
+        findings += [f"{rel}: <path>: {label}"
+                     for label, _ in scan_path(rel)]
         if _is_self(rel, root):
             continue
         # ⛔ A GITLINK IS SKIPPED ONLY IF IT IS NOT A READABLE FILE. Trusting the index mode alone
@@ -2993,8 +3237,6 @@ def _scan_tree(root: Path, compiled: list[tuple[str, re.Pattern[str]]]) -> int:
         # scanned like anything else. Fail-closed on ambiguity.
         if rel in submodules and not path.is_file():
             continue
-        raw: bytes
-        absent_from_worktree = False
         # ⛔⛔ A SYMLINK PUBLISHES ITS LINK TEXT, NOT ITS TARGET — and `read_bytes` FOLLOWS the
         # link, so this scan used to read whatever the link pointed at and never the one thing
         # git actually stores for it. Measured by the audit: a tracked link whose text was
@@ -3039,68 +3281,40 @@ def _scan_tree(root: Path, compiled: list[tuple[str, re.Pattern[str]]]) -> int:
             # staged leak precisely (file and line) AND stops an unstaged `rm` of a clean file
             # from reddening the commit. See `staged_blob`.
             #
-            # ⚠️ ONE SUBPROCESS PER ABSENT FILE, ~74 ms each (issue #34). Irrelevant for the
-            # handful of files normally in this state, and ~77 s if a 1000-file tracked directory
-            # is deleted without staging the deletion. Left per-file DELIBERATELY: the batched
-            # form is what shipped an exit-0 bypass in this same package (a non-blob response
-            # carries a body, and not consuming it desynchronised the stream — see #33), and
-            # adding a third batch reader to fix a SLOWDOWN rather than a correctness defect was
-            # the wrong trade at the end of that package. #34 carries the design.
-            #
             # ⛔⛔ BYTES, NOT TEXT, AND THE SAME BYTES-DECIDE RULE AS THE WORKTREE READ. This
             # branch used to decode here and report anything that would not decode — and once the
             # suffix stopped gating the loop, an ordinary tracked `icons/logo.png` DELETED from
             # the worktree without staging the deletion (an everyday mid-edit gesture) reached
             # this line, failed to decode, and REDDENED the commit. Worse, the remedy printed with
             # it was inert: it said "add its suffix to SKIP_SUFFIXES", and `.png` already is one.
-            # Handing the bytes to the shared block below means one rule decides "is this an
-            # asset" for both sources, which is what `_skipped`'s two-scans-must-agree note has
-            # always been about.
-            absent_from_worktree = True
-            staged = staged_blob(root, rel)
-            if staged is None:
-                # ⚠️ DO NOT NAME A CAUSE THIS DOES NOT KNOW. The remaining reason `git cat-file`
-                # refuses `:<path>` is that there is no stage-0 entry — an UNMERGED path. The
-                # encoding half of this message moved to where the decode now happens, rather than
-                # being asserted here about a step that no longer decodes anything.
-                undecodable.append(
-                    f"{rel} (absent from the worktree, and git could not read its staged content: "
-                    f"the path is probably unmerged and has no stage-0 entry)")
-                continue
-            raw = staged
+            # Handing the bytes to `consume` means one rule decides "is this an asset" for both
+            # sources, which is what `_skipped`'s two-scans-must-agree note has always been about.
+            #
+            # ⭐ BATCHED (consumer#239): collected here and read from the index in ONE
+            # `git cat-file --batch` after the walk, keyed by the index's own blob SHA. It used to
+            # be one `git cat-file` per absent file, ~74 ms each, so deleting a 1000-file tracked
+            # directory without staging the deletion cost ~77 s on the pre-commit path.
+            # `_staged_blobs` says why this batch cannot desynchronise the way the removed one did.
+            absent.append(rel)
+            continue
         except OSError as exc:
             # Anything else unreadable — a permission problem, a broken symlink. Reported rather
             # than raised, because a traceback here aborts the scan part-way and every file after
             # it goes unexamined.
             undecodable.append(f"{rel} (unreadable: {type(exc).__name__})")
             continue
-        # ⭐⭐ THE SECOND HALF OF THE SELF-EXEMPTION, and it needs the BYTES, which is why it
-        # cannot live beside the path test above. An INSTALLED guard is not inside the
-        # repository it scans, so the path test never fires there — and the repository that
-        # OWNS this engine keeps its source as an ordinary tracked file, full of synthetic
-        # deny cases. This asks "are these my own bytes", which no other file can answer yes
-        # to and no configuration can widen. See `_is_self`.
-        if _is_self(rel, root, raw):
+        consume(rel, raw, False)
+
+    absent_blobs = _staged_blobs(root, [entries[rel][1] for rel in absent])
+    for rel, blob in zip(absent, absent_blobs, strict=True):
+        if blob is None:
+            # ⚠️ DO NOT NAME A CAUSE THIS DOES NOT KNOW: name the possibilities instead.
+            undecodable.append(
+                f"{rel} (absent from the worktree, and git could not serve its staged content: "
+                f"an unmerged path with no stage-0 entry, two index paths that decode to this one "
+                f"name, or an index entry whose object is missing or is not a blob)")
             continue
-        # ⭐⭐ ONE DECISION FOR BOTH SOURCES OF `raw` — the worktree read and the staged blob.
-        # `_reading` asks, in order: does the name's binary claim hold in git's own window (skip
-        # in silence), does it decode (report it if not, unless the name hints binary and git
-        # would serve it as text anyway), does it carry a NUL (report it — the #242 BOM-less
-        # UTF-16 posture — unless the name hints binary, in which case the NUL lines are blanked
-        # and the rest is scanned, exactly as the range scan reads the same file). Both sources
-        # used to answer those questions in two places, and the consumer that shipped this window
-        # measured its two sources reaching opposite verdicts on identical bytes.
-        read = _reading(rel, raw, absent_from_worktree=absent_from_worktree)
-        if read.unreadable:
-            undecodable.append(read.unreadable)
-            continue
-        if read.partial:
-            partial.append(read.partial)
-        if read.text is None:
-            continue
-        scanned += 1
-        findings += [f"{rel}:{n}: {label}: {match!r}"
-                     for n, label, match in scan_text(read.text, compiled, rel)]
+        consume(rel, blob, True)
 
     if undecodable:
         print(f"UNREADABLE as UTF-8 ({len(undecodable)}) - not scanned, so not cleared:")
@@ -3194,8 +3408,8 @@ def staged_blob(root: Path, rel: str) -> bytes | None:
     remedy that was inert because `.png` was already in SKIP_SUFFIXES. Handing the caller the bytes
     lets ONE rule decide "is this an asset", for the worktree read and the staged blob alike.
 
-    None now means only that git refused the path — in practice an UNMERGED path, which has no
-    stage-0 entry.
+    None now means only that git refused the path — an UNMERGED path, which has no stage-0 entry,
+    or a name that is not the index's own (a non-UTF-8 path arrives here decoded).
 
     ⛔⛔ `:0:<path>`, NOT `:<path>` — THE STAGE PREFIX IS WHAT MAKES THE REST A PATH (consumer
     PR99). `:<rev>` is a git REVISION expression, and `:0:`/`:1:`/`:2:`/`:3:` inside one name a
@@ -3220,6 +3434,80 @@ def staged_blob(root: Path, rel: str) -> bytes | None:
                               capture_output=True, check=True, timeout=_GIT_TIMEOUT_S).stdout
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
         return None
+
+
+def _staged_blobs(root: Path, shas: list[str]) -> list[bytes | None]:
+    """The bytes of each BLOB SHA, in order, from ONE `git cat-file --batch` (consumer#239).
+
+    `None` for an empty SHA (an unmerged or a colliding path — `_index_entries`), a missing
+    object, or anything
+    that is not a blob.
+
+    ⛔⛔ WHY THIS BATCH CANNOT DESYNCHRONISE, when the one removed before it did. That one asked for
+    `:<path>`: a gitlink answered with a COMMIT whose body the parser did not consume, a path
+    holding a newline split one request into two, and `:0:`-shaped NAMES resolved to other files
+    (`staged_blob`). This asks for object IDS taken from `ls-files -s` — hex, no newline, nothing
+    to interpret — and consumes EVERY announced body by its byte count whatever its type, so a
+    response can never be read as the next one's header. A stream shorter than it announced fails
+    the whole batch closed (every answer `None`), never a partial or shifted one.
+    """
+    wanted = [sha for sha in shas if sha]
+    if not wanted:
+        return [None] * len(shas)
+    try:
+        out = subprocess.run(["git", "cat-file", "--batch"], cwd=root,
+                             input="".join(f"{sha}\n" for sha in wanted).encode("ascii"),
+                             capture_output=True, check=True, timeout=_GIT_TIMEOUT_S).stdout
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        return [None] * len(shas)
+    got: list[bytes | None] = []
+    pos = 0
+    try:
+        for sha in wanted:
+            nl = out.index(b"\n", pos)
+            header = out[pos:nl].decode("ascii", errors="replace").split(" ")
+            pos = nl + 1
+            if header[0] != sha:
+                raise ValueError(header)
+            if header[1:] == ["missing"]:
+                got.append(None)
+                continue
+            size = int(header[2])
+            body = out[pos:pos + size]
+            if len(body) != size:
+                raise ValueError(size)
+            got.append(body if header[1] == "blob" else None)
+            pos += size + 1
+    except (ValueError, IndexError):
+        return [None] * len(shas)
+    answers = iter(got)
+    return [next(answers) if sha else None for sha in shas]
+
+
+def _working_tree_encoded(root: Path, rel: str) -> Reading | None:
+    """The INDEX's text for a `working-tree-encoding`-converted worktree file, or None.
+
+    ⭐ #31 (the consumer#73 shape). `working-tree-encoding=UTF-16LE` stores an ordinary UTF-8 BLOB
+    and checks it out as UTF-16LE; every byte of UTF-16LE-of-ASCII is under 0x80, so it decodes as
+    valid UTF-8 with a NUL after every character and tripped the #242 refusal on a tree whose
+    committed content is clean — with "fix the encoding" as the remedy for nothing wrong. When git
+    says the attribute is set, the BLOB is what a commit records, so that is what is scanned, the
+    same fallback the unraid-templates guard ships. Fail-closed: no attribute, an unreadable blob,
+    or a blob that is itself not NUL-free UTF-8 returns `None` and the refusal stands.
+
+    ⚠️ SO FOR SUCH A FILE THE TREE SCAN READS THE INDEX, NOT THE WORKTREE: an unstaged edit to
+    its checked-out copy is not seen here. It is seen by `--staged` and `--range` once it is
+    added, which is the only way it can be committed.
+    """
+    attr = _git(root, "check-attr", "working-tree-encoding", "--", rel).strip()
+    if attr.rpartition(": ")[2] in ("", "unspecified", "unset"):
+        return None
+    blob = staged_blob(root, rel)
+    try:
+        text = blob.decode("utf-8") if blob is not None else None
+    except UnicodeDecodeError:
+        return None
+    return None if text is None or "\x00" in text else Reading(text, None, None)
 
 
 def staged_diff(root: Path) -> tuple[ParsedDiff, list[str]]:
@@ -3305,11 +3593,16 @@ def _scan_staged(root: Path, compiled: list[tuple[str, re.Pattern[str]]]) -> int
 
 
 def is_shallow(root: Path) -> bool:
-    """Is this a truncated clone? `--is-shallow-repository` prints `true`/`false`."""
+    """Is this a truncated clone? `--is-shallow-repository` prints `true`/`false`.
+
+    ⛔ ANYTHING BUT A PLAIN `false` IS SHALLOW. A git that cannot answer (one predating the flag,
+    2.15) used to be read as "complete", which is the fail-open direction: a range scan of a
+    truncated history prints a clean verdict over commits it cannot see.
+    """
     try:
-        return _git(root, "rev-parse", "--is-shallow-repository").strip() == "true"
-    except subprocess.CalledProcessError:  # pragma: no cover - git predating the flag
-        return False
+        return _git(root, "rev-parse", "--is-shallow-repository").strip() != "false"
+    except subprocess.CalledProcessError:
+        return True
 
 
 def _scan_commits(root: Path, rev_range: str,
@@ -3404,6 +3697,177 @@ def _scan_commits(root: Path, rev_range: str,
     return 0
 
 
+# ------------------------------------------------------------------------------- the hooks
+# ⭐⭐ #17: A HOOK THAT A CHECKOUT CAN REMOVE IS A HOOK THAT CAN SILENTLY BE ABSENT. The fleet's
+# hooks lived in a TRACKED `.githooks/` with `core.hooksPath .githooks`, which git resolves inside
+# the working tree — so checking out a branch, a tag or a worktree that predates the hook left no
+# hook and no warning, and its absence looked exactly like a pass.
+#
+# So `--install-hooks` writes them into the repository's own git directory (`git rev-parse
+# --git-path hooks`), which no checkout touches and every linked worktree shares, and REFUSES while
+# `core.hooksPath` is set at any scope (git would ignore that directory). Each hook is a four-line
+# shim that `exec`s the interpreter which installed it: if that interpreter or this package is
+# later removed, the hook FAILS and git refuses the commit or push — loud, never a silent pass.
+# `--check-hooks` answers "will git run them" for a setup script or an adoption check, and CI runs
+# the same scans regardless, so a clone that never installed them is still caught at the PR.
+_HOOK_MARK = "# installed by kw-leak-guard --install-hooks"
+_HOOK_ARGS = {"pre-commit": "--pre-commit", "pre-push": '--pre-push "$1"'}
+
+
+def _sh_quote(text: str) -> str:
+    """`text` as ONE single-quoted sh word: `$`, a backtick or `"` in an interpreter path must not
+    be expanded by the hook's shell."""
+    return "'" + text.replace("'", "'\"'\"'") + "'"
+
+
+def _hook_text(name: str, python: str) -> str:
+    # ⛔ `-I`, ISOLATED MODE: git runs a hook from the worktree root, and `-m` would otherwise put
+    # that directory first on `sys.path` — so a `kw_common/` package committed to the repository
+    # would REPLACE the guard and run on every commit. Isolated mode also ignores `PYTHON*`
+    # variables and the user site, so the package must be installed in the interpreter's own
+    # environment (a venv), which is how `--install-hooks` is meant to be run.
+    return (f"#!/bin/sh\n{_HOOK_MARK} - re-run it to update this file.\n"
+            f"# Fails closed: if the interpreter below is gone, git refuses the {name}.\n"
+            f"exec {_sh_quote(python)} -I -m kw_common.leakguard {_HOOK_ARGS[name]}\n")
+
+
+def _hooks_dir(root: Path) -> tuple[Path | None, str]:
+    """(the directory git runs this repository's hooks from, "") — or (None, why not)."""
+    # ⛔ THE EXIT CODE, NOT THE VALUE: `core.hooksPath` set to an EMPTY string at any scope turns
+    # every hook off, and `--git-path hooks` then answers the worktree root. A blank value is set.
+    configured = subprocess.run(["git", "config", "--get", "core.hooksPath"], cwd=root,
+                                capture_output=True, text=True, timeout=_GIT_TIMEOUT_S)
+    if configured.returncode == 0:
+        return None, (f"core.hooksPath is set ({configured.stdout.strip()!r}), so git does not "
+                      f"run hooks from this repository's git directory (an EMPTY value runs none "
+                      f"at all). If it points into the working tree it is the #17 trap: a "
+                      f"checkout can remove it. Remove the setting with `git config --unset "
+                      f"core.hooksPath` (add --global if that is where it is), then install again.")
+    hooks = Path(_git(root, "rev-parse", "--git-path", "hooks").strip())
+    return (hooks if hooks.is_absolute() else root / hooks).resolve(), ""
+
+
+def install_hooks(root: Path) -> int:
+    """Write the pre-commit and pre-push shims into the git directory. See `_HOOK_MARK`."""
+    hooks, why = _hooks_dir(root)
+    if hooks is None:
+        print(_ascii(f"NOT INSTALLED: {why}"))
+        return 1
+    # ⚠️ `absolute()`, NOT `resolve()`: a POSIX venv's `bin/python` is a SYMLINK to the base
+    # interpreter, and only the unresolved path activates the venv that has this package in it.
+    python = Path(sys.executable).absolute().as_posix()
+    for name in _HOOK_ARGS:
+        target = hooks / name
+        if target.exists() and _HOOK_MARK not in target.read_text("utf-8", errors="replace"):
+            # ⛔ Never overwrite somebody else's hook: merging two is a decision, not a default.
+            print(_ascii(f"NOT INSTALLED: {target} exists and was not written by this command. "
+                         f"Move it aside (or call `{python} -I -m kw_common.leakguard "
+                         f"{_HOOK_ARGS[name]}` from it), then install again."))
+            return 1
+    hooks.mkdir(parents=True, exist_ok=True)
+    for name in _HOOK_ARGS:
+        target = hooks / name
+        target.write_bytes(_hook_text(name, python).encode("utf-8"))
+        target.chmod(0o755)
+        print(_ascii(f"installed {target}"))
+    return check_hooks(root)
+
+
+_SHIM_EXEC = re.compile(r"^exec '((?:[^']|'\"'\"')*)' -I -m kw_common\.leakguard ", re.MULTILINE)
+
+
+def check_hooks(root: Path) -> int:
+    """0 only if git will run both hooks EXACTLY as installed, and each reaches an interpreter
+    that has the guard. A shim edited after install (an `exit 0` added, a flag changed) is not
+    active: the file must be byte-for-byte what `--install-hooks` writes for its interpreter."""
+    hooks, why = _hooks_dir(root)
+    if hooks is None:
+        print(_ascii(f"HOOKS NOT ACTIVE: {why}"))
+        return 1
+    bad: list[str] = []
+    for name in _HOOK_ARGS:
+        target = hooks / name
+        # ⛔ BYTES, not `read_text`: universal newlines would read a lone CR as `\n`, and to `sh` a
+        # CR is an ordinary character — the `exec` line folded into the comment above it runs
+        # nothing, while a text comparison called the shim intact.
+        raw = target.read_bytes() if target.is_file() else b""
+        text = raw.decode("utf-8", errors="replace")
+        found = _SHIM_EXEC.search(text)
+        python = found.group(1).replace("'\"'\"'", "'") if found else ""
+        if not found or raw != _hook_text(name, python).encode("utf-8"):
+            bad.append(f"{name}: not exactly as --install-hooks writes it ({target})")
+            continue
+        if os.name != "nt" and not os.access(target, os.X_OK):
+            bad.append(f"{name}: not executable, so git skips it ({target})")
+            continue
+        try:
+            imports = subprocess.run([python, "-I", "-c", "import kw_common.leakguard"],
+                                     cwd=root, capture_output=True,
+                                     timeout=_GIT_TIMEOUT_S).returncode == 0
+        except OSError:
+            imports = False
+        if not imports:
+            bad.append(f"{name}: {python} cannot import kw_common.leakguard")
+    if bad:
+        print("HOOKS NOT ACTIVE - run `kw-leak-guard --install-hooks`:")
+        for b in bad:
+            print("  " + _ascii(b))
+        return 1
+    print(_ascii(f"hooks active: pre-commit and pre-push in {hooks}"))
+    return 0
+
+
+def _pre_commit(root: Path, compiled: list[tuple[str, re.Pattern[str]]]) -> int:
+    """The tree scan, then the index scan — both always run, so both verdicts are printed."""
+    tree = _scan_tree(root, compiled)
+    return max(tree, _scan_staged(root, compiled))
+
+
+def _pre_push(root: Path, remote: str, refs: str,
+              compiled: list[tuple[str, re.Pattern[str]]]) -> int:
+    """Range-scan every ref git says this push publishes (`<local ref> <local sha> <remote ref>
+    <remote sha>` per line on stdin).
+
+    A deletion (all-zero local sha) publishes nothing. A ref the remote does not have yet is
+    scanned as `<sha> --not --remotes=<remote>` — diffing it against nothing would scan zero
+    commits — and with no plain remote NAME (none, or a URL or path with whitespace in it, which
+    would split into extra revision arguments), its whole history. A line that is not four
+    fields is a refusal: a hook that cannot tell what a push publishes must not let it through.
+
+    ⛔ A REF THAT DOES NOT PEEL TO A COMMIT IS REFUSED. A tag can point at a blob or a tree, and a
+    range scan walks commits — so the content it publishes is read by nothing.
+    """
+    worst = 0
+    for line in refs.splitlines():
+        fields = line.split()
+        if not fields:
+            continue
+        if len(fields) != 4:
+            print(_ascii(f"pre-push REFUSED: cannot parse the ref line {line!r}"))
+            worst = 1
+            continue
+        local_ref, local_sha, _, remote_sha = fields
+        if not local_sha.strip("0"):
+            continue
+        try:
+            kind = _git(root, "cat-file", "-t", f"{local_sha}^{{}}").strip()
+        except subprocess.CalledProcessError:
+            kind = "unreadable object"
+        if kind != "commit":
+            print(_ascii(f"pre-push REFUSED: {local_ref} publishes a {kind}, not a commit, and "
+                         f"no scan reads one. Push a tag that points at a commit."))
+            worst = 1
+            continue
+        if remote_sha.strip("0"):
+            rev_range = f"{remote_sha}..{local_sha}"
+        elif remote and not any(c.isspace() for c in remote):
+            rev_range = f"{local_sha} --not --remotes={remote}"
+        else:
+            rev_range = local_sha
+        worst = max(worst, _scan_commits(root, rev_range, compiled))
+    return worst
+
+
 def repo_root(start: str | None) -> Path:
     """The top level of the repository to scan, or a `UsageError` saying why there is none.
 
@@ -3440,7 +3904,7 @@ def main(argv: list[str]) -> int:
     try:
         args = parse_args(argv)
     except UsageError as exc:
-        print(f"{exc}\n\n{USAGE}", file=sys.stderr)
+        print(f"{_ascii(str(exc))}\n\n{USAGE}", file=sys.stderr)
         return 2
     if args.help:
         print(USAGE)
@@ -3457,8 +3921,12 @@ def main(argv: list[str]) -> int:
     except UsageError as exc:
         # The same exit and the same shape as a bad flag: `USAGE` promises 2 for a usage error,
         # and pointing `--repo` at the wrong directory is one (#12).
-        print(f"{exc}\n\n{USAGE}", file=sys.stderr)
+        print(f"{_ascii(str(exc))}\n\n{USAGE}", file=sys.stderr)
         return 2
+    if args.install_hooks:
+        return install_hooks(root)
+    if args.check_hooks:
+        return check_hooks(root)
     # ⛔ THE CONFIG IS LOADED AND APPLIED BEFORE ANY PATTERN IS COMPILED FOR A SCAN. Both steps
     # can refuse — an unreadable or self-defeating config exits 2 rather than scanning under
     # rules nobody chose. `compile_patterns()` is called AFTER `apply_config` because a scan must
@@ -3466,7 +3934,7 @@ def main(argv: list[str]) -> int:
     try:
         apply_config(resolve_config(root, args.config))
     except ConfigError as exc:
-        print(f"{exc}", file=sys.stderr)
+        print(_ascii(str(exc)), file=sys.stderr)
         return 2
 
     compiled = compile_patterns()
@@ -3474,6 +3942,11 @@ def main(argv: list[str]) -> int:
         return _scan_commits(root, args.rev_range, compiled)
     if args.staged:
         return _scan_staged(root, compiled)
+    if args.pre_commit:
+        return _pre_commit(root, compiled)
+    if args.pre_push is not None:
+        # git's ref list arrives on stdin; read in full before any scan runs.
+        return _pre_push(root, args.pre_push, sys.stdin.read(), compiled)
     return _scan_tree(root, compiled)
 
 

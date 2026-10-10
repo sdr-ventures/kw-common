@@ -699,11 +699,14 @@ _SHAPE_LABELS = {
     # drive letter, so ordinary `C:\dev\...` instructions do not fire — see the near-misses in
     # the guard's `_MUST_PASS`.
     "windows profile path",
+    # consumer#245: the IPv6 half of the two private IPv4 shapes, and RFC 8375's analogue of `.lan`.
+    "private IPv6 (ULA / link-local)",
+    "home network domain (RFC 8375)",
 }
 
 
 def test_the_denylist_is_the_agreed_shape_set():
-    """The denylist is exactly these eight shapes -- no additions, no removals.
+    """The denylist is exactly these ten shapes -- no additions, no removals.
 
     A REMOVAL silently reduces coverage. An ADDITION is the more interesting failure: the way a
     real value gets back into this file is somebody adding a pattern for one ("host codename",
@@ -918,6 +921,8 @@ _LEAK_TOKENS: list[tuple[str, str]] = [
     ("personal mail address", "someone@" + "gmail" + ".invalid"),
     ("uuid (access policy / tenant id)", "11111111-2222-3333-" + "4444-555555555555"),
     ("windows profile path", "C:\\Users\\" + "operator" + "\\AppData"),
+    ("private IPv6 (ULA / link-local)", "fd12:3456:" + "789a:1::1"),
+    ("home network domain (RFC 8375)", "printer." + "home.arpa"),
 ]
 
 # The documented placeholder forms — every one of these is PERMITTED and none of them trips a
@@ -972,7 +977,7 @@ def test_the_allowlist_cannot_grant_amnesty_to_an_adjacent_leak(want_label: str,
 def test_a_permitted_token_elsewhere_on_the_line_never_excuses_a_leak(
     want_label: str, leak: str, permitted: str,
 ) -> None:
-    """The universal half of the class: 8 shapes x 9 permitted tokens x 3 layouts.
+    """The universal half of the class: 10 shapes x 9 permitted tokens x 3 layouts.
 
     Unlike flush concatenation this IS meaning-preserving for every pattern — a permitted token
     somewhere else on the line cannot change what the leak is — so it can be swept exhaustively
@@ -1083,6 +1088,9 @@ def test_the_untouchable_lan_local_pattern_is_exactly_as_decided() -> None:
     re-applied experimentally and the ENTIRE suite stayed green, selftest included: `_MUST_PASS`
     happens to carry only the three `.local` FILENAME forms the bad repair also passes. Pinning
     the decision is the only thing that makes undoing it loud, so this asserts the regex source.
+
+    A `*` in the right bound was ALSO tried and reverted (consumer#237): it silenced Markdown
+    emphasis around a real host, `**<host>.lan**`.
     """
     assert (dict(guard.PATTERNS)["private lan domain"]
             == r"(?<![\w-])[\w-]+\.(?:lan|local)(?![\w.-])"), (
@@ -1106,25 +1114,33 @@ def test_the_false_positives_that_forced_the_trailing_dot_revert_stay_clean(samp
         f"trailing-dot repair was reverted for")
 
 
-def test_a_trailing_glob_IS_a_known_false_positive_and_is_recorded_as_one() -> None:
-    """⚠️ AN HONEST PIN OF A REAL, PRE-EXISTING FALSE POSITIVE — not a claim that it is fine.
+@pytest.mark.parametrize("glob", ["gitignore glob: *config." + "local*",
+                                  "ignore **/settings." + "local*"])
+def test_a_trailing_glob_IS_a_known_false_positive_and_is_recorded_as_one(glob: str) -> None:
+    """⚠️ AN HONEST PIN OF A REAL FALSE POSITIVE (consumer#237), not a claim that it is fine.
 
-    A `.gitignore` glob of the form `*<name>.local*` trips `private lan domain` TODAY: the glob's
-    trailing `*` is not in `[\\w.-]`, so the right bound is satisfied and the pattern reads it as
-    a hostname. A repo carrying that line would redden CI while leaking nothing.
-
-    It is pinned rather than fixed because the fix is a change to this exact pattern, which is
-    frozen by decision (see `test_the_untouchable_lan_local_pattern_is_exactly_as_decided`) — and
-    because a gap that is asserted is a gap somebody can find, whereas one mentioned in a comment
-    is not. Filed as unraid-templates#32. If that issue is resolved, this test flips to the
-    must-pass list above; until then it documents the true behaviour.
+    A `.gitignore` glob ending straight after the label trips `private lan domain`, because `*` is
+    not a label character. Rejecting a following `*` was tried and REVERTED: Markdown emphasis
+    around a real host is the same string (see the next test). The remedy is an allow-literal.
+    (Fragmented: this file is scanned.)
     """
-    glob = "gitignore glob: *config." + "local*"     # fragmented: this file is scanned
-    hits = guard.scan_text(glob, COMPILED)
-    assert [h[1] for h in hits] == ["private lan domain"], (
-        "the trailing-glob false positive changed behaviour. If it was FIXED, move this sample "
-        "into test_the_false_positives_that_forced_the_trailing_dot_revert_stay_clean and close "
-        "unraid-templates#32.")
+    assert [h[1] for h in guard.scan_text(glob, COMPILED)] == ["private lan domain"]
+
+
+@pytest.mark.parametrize("line", ["| **" + _HOST + "** | 10 |", "the printer is *printer-b." +
+                                  "local*", "**" + _HOST + "**"])
+def test_a_host_in_MARKDOWN_EMPHASIS_is_caught(line: str) -> None:
+    """Why the glob above cannot be fixed by the bound: content is the only surface that catches a
+    `.local` host at all, and a README table cell is an ordinary place to write one."""
+    assert [h[1] for h in guard.scan_text(line, COMPILED)] == ["private lan domain"], line
+
+
+def test_the_lan_local_pattern_still_catches_a_REAL_host() -> None:
+    """The other direction: the hosts the pattern exists for still fire, including the
+    sentence-final dot the reverted repair was about."""
+    for line in (f"AGENT_URL=http://{_HOST}:9999/mcp", f"ping {_HOST}", f"see {_HOST}, then",
+                 "ping printer-b." + "local"):
+        assert [h[1] for h in guard.scan_text(line, COMPILED)] == ["private lan domain"], line
 
 
 @pytest.mark.timeout(300)
@@ -2274,7 +2290,7 @@ def test_the_header_path_is_reconstructed_byte_exactly(path: str) -> None:
 
 
 @pytest.mark.parametrize("tail", [
-    '"a/caf\\303\\251.bin" "b/caf\\303\\251.bin"',   # a quoted pair the pin should prevent
+    '"a/bad\\q.bin" "b/bad\\q.bin"',                # a C-quoted pair with an escape git never emits
     "a/only-one-side",
     "a/x b/y",                                        # the two sides disagree: a rename slipped in
     "",
@@ -2353,8 +2369,8 @@ def test_an_unparseable_header_is_reported_ONCE_not_once_per_branch() -> None:
     the operator reads. Asserted on the LIST, so it pins the behaviour rather than the wording.
     """
     parsed = guard.parse_diff(
-        'diff --git "a/bad\\"q.bin" "b/bad\\"q.bin"\n'
-        'Binary files "a/bad\\"q.bin" and "b/bad\\"q.bin" differ\n')
+        'diff --git "a/bad\\q.bin" "b/bad\\q.bin"\n'
+        'Binary files "a/bad\\q.bin" and "b/bad\\q.bin" differ\n')
     assert len(parsed.unscannable) == 1, (
         f"an unparseable binary header was reported once per branch: {parsed.unscannable}")
     assert guard._is_marker(parsed.unscannable[0])
@@ -2373,24 +2389,24 @@ def test_DELETING_a_file_whose_path_cannot_be_parsed_is_not_reported() -> None:
     Both spellings, because git emits a different body for a text and a binary deletion.
     """
     text_deletion = guard.parse_diff(
-        'diff --git "a/note\\\\draft.md" "b/note\\\\draft.md"\n'
+        'diff --git "a/note\\qdraft.md" "b/note\\qdraft.md"\n'
         "deleted file mode 100644\n"
-        '--- "a/note\\\\draft.md"\n+++ /dev/null\n@@ -1 +0,0 @@\n-perfectly clean text\n')
+        '--- "a/note\\qdraft.md"\n+++ /dev/null\n@@ -1 +0,0 @@\n-perfectly clean text\n')
     assert text_deletion.unscannable == [], (
         f"deleting an unparseable TEXT path was reported: {text_deletion.unscannable}")
 
     binary_deletion = guard.parse_diff(
-        'diff --git "a/bad\\"q.bin" "b/bad\\"q.bin"\n'
+        'diff --git "a/bad\\q.bin" "b/bad\\q.bin"\n'
         "deleted file mode 100644\n"
-        'Binary files "a/bad\\"q.bin" and /dev/null differ\n')
+        'Binary files "a/bad\\q.bin" and /dev/null differ\n')
     assert binary_deletion.unscannable == [], (
         f"deleting an unparseable BINARY path was reported: {binary_deletion.unscannable}")
 
     # ⚠️ THE NEGATIVE DIRECTION, or this "fix" is just a bypass: ADDING one is still refused.
     addition = guard.parse_diff(
-        'diff --git "a/bad\\"q.bin" "b/bad\\"q.bin"\n'
+        'diff --git "a/bad\\q.bin" "b/bad\\q.bin"\n'
         "new file mode 100644\n"
-        'Binary files /dev/null and "b/bad\\"q.bin" differ\n')
+        'Binary files /dev/null and "b/bad\\q.bin" differ\n')
     assert len(addition.unscannable) == 1, (
         f"adding an unparseable path must still be refused: {addition.unscannable}")
 
@@ -2403,9 +2419,9 @@ def test_DELETING_a_file_whose_path_cannot_be_parsed_is_not_reported() -> None:
     mixed = guard.parse_diff(
         "diff --git a/asset.dat b/asset.dat\nnew file mode 100644\n"
         "Binary files /dev/null and b/asset.dat differ\n"
-        'diff --git "a/bad\\\\q.md" "b/bad\\\\q.md"\n'
+        'diff --git "a/bad\\q.md" "b/bad\\q.md"\n'
         "deleted file mode 100644\n"
-        '--- "a/bad\\\\q.md"\n+++ /dev/null\n@@ -1 +0,0 @@\n-gone\n')
+        '--- "a/bad\\q.md"\n+++ /dev/null\n@@ -1 +0,0 @@\n-gone\n')
     assert mixed.unscannable == ["asset.dat"], (
         f"the deletion's pop took an unrelated entry that was already reported: "
         f"{mixed.unscannable}")
@@ -2936,40 +2952,50 @@ def test_a_REAL_leak_in_the_author_name_is_still_caught_when_signatures_are_show
 
 
 @pytest.mark.timeout(300)
-def test_an_unparseable_header_prints_a_remediation_that_matches_its_CAUSE(
-    tmp_path: Path,
-) -> None:
-    """A fail-closed report that names the WRONG cause sends the operator after a problem that
-    does not exist — the same defect class as any other false claim in this file.
-
-    git C-quotes a path containing a quote, a backslash or a control byte REGARDLESS of
-    `core.quotePath` (which governs non-ASCII only), so such a header genuinely cannot be
-    reconstructed. The file is neither binary nor mis-encoded, so "add a binary suffix" and
-    "commit it as UTF-8 text" are both wrong.
+@pytest.mark.parametrize("name", ['quo"te.txt', "back\\slash.txt", "ctrl\x01char.txt"])
+def test_a_C_QUOTED_path_is_SCANNED_not_refused(tmp_path: Path, name: str) -> None:
+    """⭐ unraid-templates#37. git C-quotes a path holding a quote, a backslash or a control byte
+    REGARDLESS of `core.quotePath`, and this used to refuse every such header — a clean text file
+    blocked the commit. The header is decoded now, so the file is scanned like any other: CLEAN
+    passes, and a LEAK in the same file is still caught at its line.
 
     ⚠️ Built with plumbing, because Windows cannot create such a name — but every CI runner is
     Linux, where a commit carrying one is perfectly legal.
     """
     repo = tmp_path / "quotedhdr"
     base = _seeded(repo)
-    blob = subprocess.run(["git", "hash-object", "-w", "--stdin"], cwd=repo,
-                          input=b"hello world\n", capture_output=True, check=True,
-                          timeout=120).stdout.decode().strip()
-    tree = subprocess.run(["git", "mktree", "-z"], cwd=repo,
-                          input=f'100644 blob {blob}\tquo"te.txt\0'.encode(),
-                          capture_output=True, check=True, timeout=120).stdout.decode().strip()
-    sha = _git(repo, "commit-tree", tree, "-p", base, "-m", "quoted path").strip()
-    _git(repo, "update-ref", "refs/heads/main", sha)
 
-    proc = _run_guard(repo, "--range", f"{base}..{sha}")
+    def commit(body: bytes, parent: str) -> str:
+        blob = subprocess.run(["git", "hash-object", "-w", "--stdin"], cwd=repo,
+                              input=body, capture_output=True, check=True,
+                              timeout=120).stdout.decode().strip()
+        tree = subprocess.run(["git", "mktree", "-z"], cwd=repo,
+                              input=f"100644 blob {blob}\t{name}\0".encode(),
+                              capture_output=True, check=True, timeout=120).stdout.decode().strip()
+        return _git(repo, "commit-tree", tree, "-p", parent, "-m", "quoted path").strip()
+
+    clean = commit(b"hello world\n", base)
+    proc = _run_guard(repo, "--range", f"{base}..{clean}")
     out = proc.stdout + proc.stderr
-    assert proc.returncode == 1, f"an unattributable diff was cleared: {out}"
-    assert "cannot resolve to one path" in out, out
-    # The cause-specific advice must travel WITH the marker...
-    assert "C-quotes" in out and "rename it" in out, (
-        f"the marker did not carry advice matching its own cause: {out}")
-    # ...and the generic decode advice must be scoped so it no longer claims to apply to it.
-    assert "For an ordinary path above" in out, out
+    assert proc.returncode == 0, f"a clean file at a C-quoted path was refused: {out}"
+    assert "cannot resolve to one path" not in out, out
+
+    leaky = commit(f"ok\nAGENT={_ADDR}\n".encode(), base)
+    proc = _run_guard(repo, "--range", f"{base}..{leaky}")
+    out = proc.stdout + proc.stderr
+    assert proc.returncode == 1, f"a leak at a C-quoted path was cleared: {out}"
+    assert ":2: private IPv4 (RFC1918)" in out, out
+    assert _ADDR not in out, f"the finding printed the matched literal: {out}"
+
+
+def test_an_unparseable_header_carries_advice_that_matches_its_CAUSE() -> None:
+    """A fail-closed report that names the WRONG cause sends the operator after a problem that
+    does not exist. A header `_header_path` cannot resolve is neither binary nor mis-encoded, so
+    the generic "asset suffix / UTF-8" advice is wrong for it; the marker carries its own."""
+    marker = guard._shown(guard._header_path('"a/bad\\q.bin" "b/bad\\q.bin"'))
+    assert "cannot resolve to one path" in marker
+    assert "review that commit by hand" in marker
+    assert "suffix" not in marker and "UTF-8" not in marker
 
 
 def test_the_required_status_check_names_are_recorded_in_the_workflow() -> None:

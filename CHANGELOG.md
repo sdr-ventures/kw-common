@@ -9,6 +9,65 @@ exported symbol that changed. ⛔ It does NOT name the consumers that need a cod
 repository is public, and honouring that older promise would publish the fleet's inventory at
 exactly the moment the release notes are read most widely.
 
+## [1.7.0] - Unreleased
+
+**Makes the leak guard correct enough to be the one engine the fleet runs.** No name in any
+module's `__all__` was removed or changed in signature — MINOR.
+
+### Behaviour that changes what a scan reports
+
+* **Two new shapes** (consumer#245). `private IPv6 (ULA / link-local)` — unique-local (fc00/7) and
+  link-local (fe80/10) addresses, written in full or `::`-elided, bare or in a URL's brackets.
+  `home network domain (RFC 8375)` — a host under `.home.arpa`. Both apply to file content, paths,
+  commit messages and tags. RFC 3849's `2001:db8::/32` is the documented IPv6 placeholder and does
+  not fire; neither do the range bases written as ranges. A repository whose tests carry a
+  link-local or zero-ID unique-local literal will see a finding on bump: rewrite it to the RFC
+  3849 prefix.
+* **A finding no longer prints the matched value** — only the shape, the file and the line. Any
+  printed path, revision range or directory has its shapes redacted to `<label>`. The value used to
+  be republished in every CI log that reported it. Exit codes are unchanged.
+* Control bytes other than the newline are escaped in printed output, so an ESC or CR in a decoded
+  filename cannot overwrite a finding line. A newline in a filename still starts a new line.
+
+A `.gitignore` glob whose `*` follows `.local`/`.lan` directly is still a finding (consumer#237):
+Markdown emphasis around a real host is the same string. Allow the literal in `.leakguard.json`.
+
+### Fixes
+
+* `#31` — a file with a `working-tree-encoding` attribute is checked out NUL-bearing by design,
+  and a clean tree was refused as "not UTF-8 text". The tree scan now reads the index blob for it,
+  as the unraid-templates guard does; without the attribute the refusal stands.
+* unraid-templates#37 — a path holding a quote, a backslash or a control byte is C-quoted in the
+  `diff --git` header whatever `core.quotePath` says, and the range and staged scans refused every
+  such file. The header is decoded now; only a malformed header is still refused.
+* consumer#239 — the tree scan read each staged-but-absent file with its own `git cat-file`
+  (~74 ms each). They are read in one batch, by the index's blob SHA.
+* `is_shallow` treated a git that could not answer as a complete clone; anything but `false` is now
+  shallow, so the range scan refuses rather than scanning truncated history.
+* `#37` — the release workflow refused a `vX.Y.ZrcN` tag. It now publishes one as a pre-release
+  of `X.Y.Z`; any other tag must still equal `v<__version__>`.
+
+### Distribution: adopting is a pin, not a copy
+
+* **A reusable workflow**, `.github/workflows/leak-guard.yml` (`workflow_call`, input `version`):
+  the self-test, the tree scan and the range scan of what the event publishes — for a tag, the
+  commits since the previous `v[0-9]*` tag and the tag object; for a new branch, everything the
+  default branch does not have. One job id gives every repository the same required check:
+  `leak-guard / No internal info (leak guard)`.
+* **Hooks the package installs** (`#17`): `kw-leak-guard --install-hooks` writes a pre-commit and a
+  pre-push shim into the git directory, where no checkout removes them; `--check-hooks` says
+  whether git will run them; `--pre-commit` and `--pre-push <remote>` are what they call. A shim
+  whose interpreter is gone fails rather than skipping; it runs isolated (`-I`), so a repository
+  cannot shadow the guard with its own `kw_common/`; an empty `core.hooksPath` is refused; a push
+  of a tag on a blob or tree is refused. This repository's own pre-push hook is now
+  installed the same way (copied into the git directory), not through a relative
+  `core.hooksPath`.
+* **A tag range no longer re-reads the previous release's annotation.** `release.yml` and the
+  reusable workflow name the base tag peeled to its commit; the guard reads a tag object for every
+  revision a range names, base included.
+* **`docs/ADOPTION.md`**: the migration for a Python service, a container, a template repository
+  and a vendored copy of the guard, and the checks that prove it worked.
+
 ## [1.6.3] - 2026-10-08
 
 **Stops ntfy dropping a long alert** (`#36`). ntfy answers HTTP 400 to a message body of about

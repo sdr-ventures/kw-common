@@ -119,14 +119,13 @@ def test_an_injected_literal_clears_a_leak_that_reds_without_it(tmp_path: Path) 
     assert before.returncode == 1, (
         f"the leak was not caught WITHOUT a config, so this test cannot show a config clearing "
         f"it:\n{_out(before)}")
-    # ⚠️ THE POOL FRAGMENT, not the whole path: the guard reports the MATCH rather than the line
-    # or the value the reader wrote, so asserting on the full path would be asserting on a message
-    # format the guard has never used.
+    # ⚠️ THE SHAPE, never the value: a finding names the pattern, the file and the line, and the
+    # matched literal is deliberately absent from the output (a CI log is as public as the repo).
     #
     # ⛔ AND THE MATCH IS NOT SPELLED IN THIS COMMENT, which the guard itself caught when it was.
     # A comment explaining a deny shape is still a line of a scanned file — the same trap the
     # sibling suites warn about, walked into while documenting it.
-    assert _POOL in _out(before), _out(before)
+    assert "unraid pool path" in _out(before) and _POOL not in _out(before), _out(before)
 
     _write_config(repo, {"allow_literals": [
         {"literal": _LEAK_PATH, "why": "test fixture: a path this repository is allowed to name"}]})

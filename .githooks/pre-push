@@ -12,8 +12,11 @@
 #   keep clean, which is what #16 measured. So the list lives in a project-side guard that is
 #   committed nowhere, and this hook runs THAT.
 #
-# INSTALL (per clone, once):
-#   git config core.hooksPath .githooks && git config kw.privateGuard "<absolute path to the guard>"
+# INSTALL (per clone, once) -- into the git DIRECTORY, which no checkout can remove (#17):
+#   git config --unset core.hooksPath
+#   cp .githooks/pre-push "$(git rev-parse --git-path hooks)/pre-push"
+#   git config kw.privateGuard "<absolute path to the guard>"
+# The installed copy does not follow the checkout: re-run the `cp` after this file changes.
 #
 # WHAT `kw.privateGuard` MUST POINT AT -- the contract, because guessing it wrong is silent in one
 # direction and deafening in the other.
@@ -45,10 +48,10 @@
 #   * Nothing in this repository can assert that it ran on anyone else's machine, and CI cannot
 #     re-check it, because CI must not have the list either. `tests/test_leak_guard_hook.py`
 #     asserts what the hook DOES when it runs; it cannot assert that it ran.
-#   * `core.hooksPath .githooks` is RELATIVE, so git resolves it inside the working tree. Check out
-#     a branch, tag or worktree from before this file existed and there is no hook and no warning
-#     -- measured. A hooks directory OUTSIDE the worktree does not have that property; the
-#     fleet-wide install is the place to fix it, not this file. Filed.
+#   * Do NOT install with `core.hooksPath .githooks`. That path is RELATIVE, so git resolves it
+#     inside the working tree, and checking out a branch, tag or worktree from before this file
+#     existed leaves no hook and no warning -- measured (#17). The copy in the git directory is
+#     shared by every worktree and survives every checkout.
 #   * `--not --remotes=<remote>` is scoped to the remote being pushed to, so a commit already
 #     fetched from THAT remote is excluded and one fetched from a different remote is not. If the
 #     push target is a bare URL rather than a named remote the pattern matches nothing, which

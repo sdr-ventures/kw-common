@@ -16,13 +16,13 @@ no port, no alignment audit, and no "which copy is the good one" question to ans
 Consumers install from git at an **exact tag** — never a branch:
 
 ```
-pip install git+https://github.com/texasdaddy/kw-common@v1.6.3
+pip install git+https://github.com/texasdaddy/kw-common@v1.7.0
 ```
 
 In a `requirements.in` / `requirements.txt`:
 
 ```
-kw-common @ git+https://github.com/texasdaddy/kw-common@v1.6.3
+kw-common @ git+https://github.com/texasdaddy/kw-common@v1.7.0
 ```
 
 ⛔ **Never pin a branch.** `@main` makes every rebuild of every consumer a silent, unreviewed
@@ -257,6 +257,11 @@ The tag and `kw_common.__version__` must agree; the release workflow refuses the
 do not. `src/kw_common/__init__.py` is the single source of the version — `pyproject.toml` reads
 it dynamically.
 
+A **release candidate** is the tag `v<version>rcN` (for example `v1.7.0rc1` while
+`__version__` is `1.7.0`), cut from the PR branch before merge. It publishes as a GitHub
+**pre-release** of that version, so a consumer's `dev` line can pin it; the final `v<version>` tag
+is cut on `main` after the merge. Any other tag that does not equal `v<version>` is refused.
+
 ## The leak guard
 
 `kw_common.leakguard` is the fleet's internal-information guard. It used to be a file each
@@ -279,6 +284,13 @@ CI runs the self-test, the tree scan **and** a commit-range scan — different q
 scan asks "is it here now" and reads tracked files only; the range scan reads what each commit
 *added*, so it also catches a value that was committed and then deleted, which stays permanently
 readable at the commit that added it.
+
+It matches **shapes**, never real values: RFC 1918 and CGNAT addresses, unique-local and
+link-local IPv6 addresses, tailnet names, `.lan`/`.local`/`.home.arpa` hosts, stock Unraid pool
+paths, consumer-mail addresses, Windows profile paths and UUIDs. A finding prints the shape, the
+file and the line — **never the matched value**, which would otherwise be republished in the CI
+log. A path, revision range or directory printed alongside it has any shape in it redacted to
+`<its label>`.
 
 ### Configuring it — from YOUR repository, never by editing the install
 
@@ -374,11 +386,16 @@ would then be published by the very artifacts it exists to keep clean — that w
 theorised. So the list lives in a guard that is committed to no repository at all, and
 `.githooks/pre-push` is what runs it, at the moment publication actually happens.
 
-Install it once per clone:
+Install it once per clone, into the git **directory** — which no checkout can remove (#17):
 
 ```
-git config core.hooksPath .githooks && git config kw.privateGuard "<absolute path to the project-side guard>"
+git config --unset core.hooksPath
+cp .githooks/pre-push "$(git rev-parse --git-path hooks)/pre-push"
+git config kw.privateGuard "<absolute path to the project-side guard>"
 ```
+
+The installed copy does not follow the checkout, so re-run the `cp` after `.githooks/pre-push`
+changes.
 
 It scans the tracked working tree (what the wheel and the sdist are built from) and the commits
 each ref would publish, and it **refuses the push** on any finding — and refuses outright when
@@ -392,15 +409,34 @@ which is the point, since refusing them blocks the cleanup itself. Anything eith
 publish is still scanned commit by commit.
 
 ⚠️ The unconfigured-guard refusal comes FIRST, before the ref list is read, so it applies to those
-two as well: on a fresh clone with `core.hooksPath` set and no `kw.privateGuard`, even a deletion
+two as well: on a fresh clone with the hook installed and no `kw.privateGuard`, even a deletion
 is refused — and the message names the config key rather than your tree.
 
 ⚠️ **Declared bounds.** A hook is a local convention. Nothing in this repository, and nothing in
-CI, can assert that it ran on somebody's machine — CI must not have the list either. And
-`core.hooksPath .githooks` is a RELATIVE path, resolved inside the working tree, so a checkout
-that predates the hook has none and git says nothing: see issue #17, and the hook's own header.
+CI, can assert that it ran on somebody's machine — CI must not have the list either. Do not
+install it with `core.hooksPath .githooks`: that path is resolved inside the working tree, so a
+checkout that predates the hook has none and git says nothing (#17).
 `tests/test_leak_guard_hook.py` drives the real hook against a real `git push` and asserts whether
 the remote ref moved; that is what can be checked here, and it says so rather than implying more.
+
+### Hooks for a repository that CONSUMES the guard
+
+A consuming repository does not copy hook scripts. The package installs them:
+
+```
+kw-leak-guard --install-hooks   # pre-commit: tree + --staged scans; pre-push: every ref's range
+kw-leak-guard --check-hooks     # exit 0 only if git will run both
+```
+
+Both hooks go into the repository's git directory, which no checkout removes and every linked
+worktree shares, and each `exec`s the interpreter that installed it — remove that interpreter or
+the package and the hook *fails*, so git refuses the commit or push instead of skipping the check.
+`--install-hooks` refuses while `core.hooksPath` is set — an empty value too, which turns every
+hook off — and never overwrites a hook it did not write. The hooks run the interpreter isolated
+(`-I`), so a `kw_common/` directory in the repository cannot stand in for the guard; install the
+pin into a virtual environment, not with `pip install --user`. A push of a tag that points at a
+blob or a tree is refused, because no scan reads that content.
+[`docs/ADOPTION.md`](docs/ADOPTION.md) is the full migration for each kind of repository.
 
 ### This repository is PUBLIC
 
@@ -411,7 +447,8 @@ the library.
 Placeholders in code, tests, comments and documentation come from the guard's own `_MUST_PASS`
 corpus — the list of shapes it is pinned to *allow*: `example.com` and `*.example` for hosts, the
 RFC 5737 documentation ranges (`192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24`) for addresses,
-and `/mnt/POOL/appdata/<app>` or the container path the code actually uses for filesystem paths.
+RFC 3849's `2001:db8::/32` for an IPv6 address, and `/mnt/POOL/appdata/<app>` or the container
+path the code actually uses for filesystem paths.
 "Realistic" is not a reason to write a real value.
 
 ⚠️ `*.invalid` is **not** in `_MUST_PASS`, and it is not a blanket-safe suffix. `example.invalid`

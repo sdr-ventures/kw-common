@@ -1,0 +1,129 @@
+name: leak-guard
+
+# ⭐ THE FLEET'S LEAK-GUARD CHECK, ONCE. A consuming repository calls this instead of carrying its
+# own copy of the steps, so the check is the same everywhere and its required-status name is too:
+#
+#   jobs:
+#     leak-guard:
+#       uses: sdr-ventures/kw-common/.github/workflows/leak-guard.yml@v1.7.0
+#       with:
+#         version: v1.7.0
+#
+# publishes the check `leak-guard / No internal info (leak guard)`. Keep the caller's job id
+# `leak-guard` and the two pins equal: `@<ref>` picks these steps, `version` picks the engine they
+# install. docs/ADOPTION.md is the full migration.
+#
+# What it runs: the self-test, the tree scan, and the range scan of exactly what the triggering
+# event publishes — a pull request's commits, a push's new commits, or for a TAG the commits since
+# the previous `v[0-9]*` tag PLUS the tag object itself.
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: >-
+          The kw-common to install: a release tag (vX.Y.Z or vX.Y.ZrcN) or a full 40-character
+          commit SHA. Never a branch — a pin that moves is not a pin.
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  leak-guard:
+    name: No internal info (leak guard)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          # The range scan needs real history AND tags; on a shallow checkout the guard refuses.
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Install the pinned guard
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -eu
+          # The WHOLE string, not any line of it: a multi-line value passed a per-line grep.
+          if ! [[ "$VERSION" =~ ^(v[0-9]+\.[0-9]+\.[0-9]+(rc[1-9][0-9]*)?|[0-9a-f]{40})$ ]]; then
+            echo "::error::version '${VERSION}' is not a release tag (vX.Y.Z, vX.Y.ZrcN) or a"
+            echo "::error::full commit SHA. A branch name moves under you; pin something that"
+            echo "::error::cannot."
+            exit 1
+          fi
+          # Its own venv, so nothing the caller's repository installs can shadow the guard.
+          python -m venv "$RUNNER_TEMP/kw-leak-guard"
+          "$RUNNER_TEMP/kw-leak-guard/bin/python" -m pip install --quiet --upgrade pip
+          "$RUNNER_TEMP/kw-leak-guard/bin/python" -m pip install --quiet \
+            "kw-common @ git+https://github.com/sdr-ventures/kw-common@${VERSION}"
+          echo "$RUNNER_TEMP/kw-leak-guard/bin" >> "$GITHUB_PATH"
+          got="$("$RUNNER_TEMP/kw-leak-guard/bin/python" -c \
+                 'import kw_common; print(kw_common.__version__)')"
+          echo "installed kw-common ${got} from ${VERSION}"
+          case "$VERSION" in
+            v*) want="${VERSION#v}"; want="${want%rc*}"
+                if [ "$got" != "$want" ] && [ "$got" != "${VERSION#v}" ]; then
+                  echo "::error::${VERSION} installed kw-common ${got}, not ${want}."
+                  exit 1
+                fi ;;
+          esac
+      - name: Self-test the patterns, then scan the working tree
+        run: |
+          kw-leak-guard --selftest
+          kw-leak-guard
+      - name: Scan what this event publishes
+        env:
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -eu
+          z40=0000000000000000000000000000000000000000
+          case "$EVENT:$REF" in
+            pull_request*)
+              range="${PR_BASE}..${PR_HEAD}" ;;
+            push:refs/tags/*)
+              # ⭐ THE RANGE NAMES THE TAG REF, so the annotation — free prose, published on the
+              # release page — is read too. Every tag at this commit is excluded from the base
+              # search, or a twin tag becomes the base and the range collapses to nothing.
+              excludes=""
+              for t in $(git tag --points-at "$HEAD_SHA"); do excludes="$excludes --exclude=$t"; done
+              # shellcheck disable=SC2086
+              base="$(git describe --tags --abbrev=0 --match 'v[0-9]*' $excludes "$HEAD_SHA" \
+                      2>/dev/null || true)"
+              # ⚠️ The base is PEELED to its commit: the guard reads a tag object for every revision
+              # the range names, so a bare `<base tag>..` would re-scan the previous release's
+              # annotation, which this push does not publish.
+              range="$REF"
+              if [ -n "$base" ] && [ "$(git rev-list --count "${base}..${REF}")" -gt 0 ]; then
+                range="${base}^{commit}..${REF}"
+              fi ;;
+            push:*)
+              if [ -z "$PUSH_BEFORE" ] || [ "$PUSH_BEFORE" = "$z40" ]; then
+                # ⛔ A branch created by this push publishes EVERY commit the default branch does
+                # not have, not just its tip: a leak added and removed on it would otherwise pass.
+                # Scan from the default branch; without one to compare against — or when this IS
+                # the default branch's first push, which publishes everything — all history.
+                default="refs/remotes/origin/${DEFAULT_BRANCH:-}"
+                range="$HEAD_SHA"
+                if [ -n "${DEFAULT_BRANCH:-}" ] && [ "$REF" != "refs/heads/${DEFAULT_BRANCH}" ] \
+                    && git rev-parse --verify -q "$default" >/dev/null; then
+                  range="${default}..${HEAD_SHA}"
+                fi
+              else
+                range="${PUSH_BEFORE}..${HEAD_SHA}"
+              fi ;;
+            *)
+              # Any other trigger (a schedule, a manual run): everything reachable, the widest scan.
+              range="$HEAD_SHA" ;;
+          esac
+          echo "range: $range"
+          kw-leak-guard --range "$range"

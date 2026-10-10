@@ -147,16 +147,12 @@ def _scratch(tmp_path: Path, *, configure_guard: bool = True) -> tuple[Path, Pat
     guard.write_text(STUB_GUARD.replace("SENTINEL_PLACEHOLDER", SENTINEL), encoding="utf-8")
 
     # ⭐ THE INSTALL FORM THE DOCUMENTS PRESCRIBE, not a convenient one. The README and the hook's
-    # own header say `git config core.hooksPath .githooks` — a RELATIVE path, resolved inside the
-    # working tree — so that is what these tests drive. An earlier version pointed `core.hooksPath`
-    # at an absolute directory outside the repository, which is a different install with different
-    # properties, and testing it would have proved nothing about the one an operator runs.
-    hooks = work / ".githooks"
-    hooks.mkdir()
-    shutil.copyfile(HOOK, hooks / "pre-push")
-    os.chmod(hooks / "pre-push", 0o755)  # noqa: S103 - a hook git will not run otherwise
-
-    assert _git(work, "config", "core.hooksPath", ".githooks").returncode == 0
+    # own header say: copy it into `git rev-parse --git-path hooks` — the git DIRECTORY, which no
+    # checkout removes (#17). The old relative `core.hooksPath .githooks` form is what #17 was.
+    installed = _installed_hook(work)
+    installed.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(HOOK, installed)
+    os.chmod(installed, 0o755)  # noqa: S103 - a hook git will not run otherwise
     if configure_guard:
         # ⚠️ The hook runs `python3`/`python`/`py -3`, not this interpreter. The stub is plain
         # stdlib so any of them runs it; what matters is that the PATH has one, which the probe
@@ -169,6 +165,12 @@ def _scratch(tmp_path: Path, *, configure_guard: bool = True) -> tuple[Path, Pat
     assert _git(work, "add", "README.md").returncode == 0
     assert _git(work, "commit", "-m", "first").returncode == 0
     return work, remote, guard.with_suffix(".log")
+
+
+def _installed_hook(work: Path) -> Path:
+    """Where `_scratch` installed the hook: the git directory, as the documents prescribe."""
+    hooks = Path(_git(work, "rev-parse", "--git-path", "hooks").stdout.strip())
+    return (hooks if hooks.is_absolute() else work / hooks) / "pre-push"
 
 
 def _remote_head(remote: Path, ref: str = "refs/heads/main") -> str | None:
@@ -251,9 +253,31 @@ def test_the_hook_probes_the_interpreter_by_RUNNING_it_not_by_command_v() -> Non
 def test_the_hook_states_the_config_key_and_the_install_command() -> None:
     """The refusal has to be actionable. A hook that says only "refused" is a wall."""
     text = HOOK.read_text(encoding="utf-8")
-    assert "core.hooksPath .githooks" in text, "the hook does not carry its own install command"
+    assert 'cp .githooks/pre-push "$(git rev-parse --git-path hooks)/pre-push"' in text, (
+        "the hook does not carry its own install command")
     assert text.count("kw.privateGuard") >= 2, (
         "the hook no longer names the config key in both the install line and the refusal")
+
+
+@needs_sh
+@pytest.mark.timeout(300)
+def test_the_INSTALLED_hook_survives_a_checkout_that_has_no_githooks_directory(
+    tmp_path: Path,
+) -> None:
+    """⭐ #17. Installed the documented way, the hook lives in the git directory, so an orphan
+    branch with no `.githooks/` at all still runs it on push — the stub guard refuses the
+    sentinel. Installed the old way (`core.hooksPath .githooks`), the same push went through with
+    zero guard invocations."""
+    work, remote, _ = _scratch(tmp_path)
+    assert _git(work, "checkout", "-q", "--orphan", "bare-branch").returncode == 0
+    assert _git(work, "rm", "-q", "-rf", "--cached", ".").returncode == 0
+    (work / "README.md").write_text(f"{SENTINEL}\n", encoding="utf-8")
+    assert _git(work, "add", "README.md").returncode == 0
+    assert _git(work, "commit", "-q", "-m", "orphan").returncode == 0
+    assert not (work / ".githooks").exists()
+    res = _git(work, "push", "origin", "bare-branch")
+    assert res.returncode != 0, f"the push went through with no hook: {res.stdout}{res.stderr}"
+    assert _remote_head(remote, "refs/heads/bare-branch") is None
 
 
 # =================================================================================================
@@ -542,7 +566,7 @@ def test_the_range_excludes_only_THIS_remotes_refs_not_every_remotes(tmp_path: P
     assert _git(work, "config", "core.hooksPath", "no-such-hooks").returncode == 0
     assert _git(work, "push", "private", "secret").returncode == 0
     assert _git(work, "fetch", "private").returncode == 0
-    assert _git(work, "config", "core.hooksPath", ".githooks").returncode == 0
+    assert _git(work, "config", "--unset", "core.hooksPath").returncode == 0
     guard = tmp_path / "stubguard.py"
     assert _git(work, "config", "kw.privateGuard", str(guard)).returncode == 0
     log.write_text("", encoding="utf-8")
@@ -654,7 +678,7 @@ def test_a_ref_list_the_hook_cannot_PARSE_still_scans_the_tree(tmp_path: Path) -
     Unreachable through `git push`, which always sends four fields; driven directly.
     """
     work, _remote, log = _scratch(tmp_path)
-    hook = work / ".githooks" / "pre-push"
+    hook = _installed_hook(work)
     (work / "README.md").write_text(f"{SENTINEL}\n", encoding="utf-8")
 
     res = subprocess.run(["sh", str(hook), "origin", str(work)], cwd=work, input="   \n",
@@ -677,7 +701,7 @@ def test_the_hook_run_BY_HAND_with_no_refs_still_scans_the_tree(tmp_path: Path) 
     which is why `${1:-}` is written that way.
     """
     work, _remote, log = _scratch(tmp_path)
-    hook = work / ".githooks" / "pre-push"
+    hook = _installed_hook(work)
 
     (work / "README.md").write_text(f"{SENTINEL}\n", encoding="utf-8")
     res = subprocess.run(["sh", str(hook)], cwd=work, input="", capture_output=True, text=True,

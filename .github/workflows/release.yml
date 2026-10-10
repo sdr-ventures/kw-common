@@ -98,7 +98,9 @@ jobs:
           range=""
           count=0
           if [ -n "$base" ]; then
-            range="${base}..${target}"
+            # The base PEELED to its commit: a bare tag name in the range would re-scan the
+            # previous release's annotation, which this tag does not publish.
+            range="${base}^{commit}..${target}"
             count="$(git rev-list --count "$range")"
           fi
           if [ "$count" -eq 0 ]; then
@@ -147,6 +149,9 @@ jobs:
   build:
     name: Build the wheel and sdist
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -206,7 +211,13 @@ jobs:
             echo "::error::  git push origin ${GITHUB_REF_NAME}"
             exit 1
           fi
+      # ⭐ A RELEASE CANDIDATE IS `v<package version>rcN` (#37) and publishes as a PRE-RELEASE of
+      # that version, so an rc is cut from the PR branch without a version-bump commit and a
+      # consumer's `dev` line can pin it. The package still reports `X.Y.Z`; the tag is what says
+      # "candidate". Anything else must equal `v<package version>` exactly. `version` and
+      # `prerelease` are this job's outputs, read by the wheel check below and by `publish`.
       - name: The tag must match the package version
+        id: version
         run: |
           set -eu
           tag="${GITHUB_REF_NAME}"
@@ -222,11 +233,23 @@ jobs:
               raise SystemExit('__version__ not found in src/kw_common/__init__.py')
           ")"
           echo "tag=${tag}  package=${pkg}"
-          if [ "$tag" != "$pkg" ]; then
+          prerelease=false
+          candidate_of=""
+          # rc1 upwards, no leading zero; a package that is itself an rc takes no second suffix.
+          if [[ "$tag" =~ ^(.+)rc[1-9][0-9]*$ ]]; then
+            prerelease=true
+            candidate_of="${BASH_REMATCH[1]}"
+            if [[ "$candidate_of" == *rc* ]]; then candidate_of=""; fi
+          fi
+          if [ "$tag" != "$pkg" ] && [ "$candidate_of" != "$pkg" ]; then
             echo "::error::tag ${tag} does not match the package version ${pkg}."
+            echo "::error::A release is ${pkg}, a candidate for it is ${pkg}rcN."
             echo "::error::Bump __version__ in src/kw_common/__init__.py, or retag."
             exit 1
           fi
+          echo "version=${pkg#v}" >> "$GITHUB_OUTPUT"
+          echo "prerelease=${prerelease}" >> "$GITHUB_OUTPUT"
+          echo "publishing ${tag}: version=${pkg#v} prerelease=${prerelease}"
       # ⭐ THE SAME SDIST INSPECTION `ci.yml` RUNS, DUPLICATED HERE ON PURPOSE — this is the job
       # that UPLOADS the tarball to the Release, and the header of this file promises the
       # packaging check runs again against the tag's tree. It did not: the check was added to
@@ -315,6 +338,10 @@ jobs:
           /tmp/sdisttest/bin/python -u -m pytest
       # The same check ci.yml runs, repeated here because THIS is the artifact being published.
       - name: Install the built wheel into a clean environment and import it
+        env:
+          # The PACKAGE version the tag was checked against: an rc tag carries a suffix the
+          # package does not (#37).
+          PKG_VERSION: ${{ steps.version.outputs.version }}
         run: |
           set -eu
           python -m venv /tmp/consumer
@@ -325,8 +352,8 @@ jobs:
           import kw_common, kw_common.alerting as a, kw_common.leakguard as g
           import kw_common.alerting_env as e
           import os
-          assert kw_common.__version__ == os.environ['GITHUB_REF_NAME'].lstrip('v'), (
-              kw_common.__version__, os.environ['GITHUB_REF_NAME'])
+          assert os.environ['PKG_VERSION'] and kw_common.__version__ == os.environ['PKG_VERSION'], (
+              kw_common.__version__, os.environ['PKG_VERSION'], os.environ['GITHUB_REF_NAME'])
           assert a.notify and a.AlertSettings and a.configure
           assert g.main and g.cli and g.load_config and g.CONFIG_FILENAME == '.leakguard.json'
           # The environment layer, from the PUBLISHED wheel. The three variable names are what a
@@ -368,9 +395,12 @@ jobs:
           name: dist
           path: dist/
       - name: Extract the release notes from CHANGELOG.md
+        env:
+          # The package version, not the tag: an rc's notes are its release's section (#37).
+          VERSION: ${{ needs.build.outputs.version }}
         run: |
           set -eu
-          VERSION="${GITHUB_REF_NAME#v}"
+          [ -n "${VERSION}" ] || { echo "::error::the build job published no version"; exit 1; }
           awk -v hdr="## [${VERSION}]" '
             index($0, hdr) == 1 {f=1; next}
             f && index($0, "## [") == 1 {exit}
@@ -387,7 +417,8 @@ jobs:
         with:
           name: ${{ github.ref_name }}
           body_path: release_notes.md
-          prerelease: false
+          # `true` only for a `vX.Y.ZrcN` tag (#37); a pre-release is never marked "latest".
+          prerelease: ${{ needs.build.outputs.prerelease == 'true' }}
           files: |
             dist/*.whl
             dist/*.tar.gz
