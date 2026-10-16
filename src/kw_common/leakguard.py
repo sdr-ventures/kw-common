@@ -2743,8 +2743,8 @@ _MUST_PASS: list[str] = [
     "doc range 203.0.113.9 is fine",
     "APP_BASE_URL=https://svc.your-domain.example",
     "ntfy example: https://ntfy.example.com",
-    "see https://github.com/texasdaddy/kw-common/issues/31",
-    "icon: https://raw.githubusercontent.com/texasdaddy/unraid-templates/main/icons/app.png",
+    "see https://github.com/sdr-ventures/kw-common/issues/31",
+    "icon: https://raw.githubusercontent.com/sdr-ventures/unraid-templates/main/icons/app.png",
     "version 10.16.2 of the driver",              # not an address
     "the 172.315 basis-point spread",             # not an address
     "bind 0.0.0.0:5000",
@@ -2909,7 +2909,7 @@ _MUST_FAIL_PATHS: list[tuple[str, str]] = [
 # Ordinary commit messages. Every one of these blocked a PUSH — and a message cannot be edited
 # without rewriting history, so a false red here is far more expensive than one on a file.
 _MUST_PASS_MESSAGES: list[str] = [
-    "Merge pull request #1 from texasdaddy/feature",
+    "Merge pull request #1 from sdr-ventures/feature",
     'Revert "add the thing"\n\nThis reverts commit 3d3c42e5aac5ba805825da76410c181273ba90b1.',
     "cherry-pick the fix\n\n(cherry picked from commit 3d3c42e5aac5ba805825da76410c181273ba90b1)",
     "Rename config.local to config.defaults",
@@ -2923,7 +2923,7 @@ _MUST_PASS_MESSAGES: list[str] = [
     # both passed — the regression test for the `_ABS_POOL_PATH` left bound.
     "docs: add docs/mnt/user/notes.md",
     "test: fixtures now live under tests/fixtures/mnt/cache/appdata/svc",
-    "fix: close the issue at https://github.com/texasdaddy/kw-common/issues/31\n\n"
+    "fix: close the issue at https://github.com/sdr-ventures/kw-common/issues/31\n\n"
     "Co-Authored-By: Someone <1234+someone@users.noreply.github.com>",
 ]
 

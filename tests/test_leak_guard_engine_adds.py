@@ -951,7 +951,7 @@ def test_clean_messages_a_MERGE_and_a_clean_TAG_all_pass(tmp_path: Path) -> None
     _write(repo, "main.txt", "main\n")
     base = _commit(repo, f"document the example host {_OK_HOST} at {_OK_ADDR}")
     _git(repo, "merge", "--no-ff", "-q", "-m",
-         "Merge pull request #1 from texasdaddy/side", "side")
+         "Merge pull request #1 from sdr-ventures/side", "side")
     head = _git(repo, "rev-parse", "HEAD").strip()
     _git(repo, "tag", "-a", "v1.0.0", "-m", f"clean release, see {_OK_HOST}")
 
