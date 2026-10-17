@@ -1233,11 +1233,11 @@ every service runs the same code instead of a copy that drifts.
   cannot disagree. Calling the function directly with `backups=None` raises; see issue #5.
   *(Superseded: 1.4.1 accepts `None` as that sentinel again.)*
 
-[1.5.0]: https://github.com/texasdaddy/kw-common/releases/tag/v1.5.0
-[1.4.1]: https://github.com/texasdaddy/kw-common/releases/tag/v1.4.1
-[1.4.0]: https://github.com/texasdaddy/kw-common/releases/tag/v1.4.0
-[1.3.0]: https://github.com/texasdaddy/kw-common/releases/tag/v1.3.0
-[1.2.0]: https://github.com/texasdaddy/kw-common/releases/tag/v1.2.0
-[1.1.0]: https://github.com/texasdaddy/kw-common/releases/tag/v1.1.0
-[1.0.1]: https://github.com/texasdaddy/kw-common/releases/tag/v1.0.1
-[1.0.0]: https://github.com/texasdaddy/kw-common/releases/tag/v1.0.0
+[1.5.0]: https://github.com/sdr-ventures/kw-common/releases/tag/v1.5.0
+[1.4.1]: https://github.com/sdr-ventures/kw-common/releases/tag/v1.4.1
+[1.4.0]: https://github.com/sdr-ventures/kw-common/releases/tag/v1.4.0
+[1.3.0]: https://github.com/sdr-ventures/kw-common/releases/tag/v1.3.0
+[1.2.0]: https://github.com/sdr-ventures/kw-common/releases/tag/v1.2.0
+[1.1.0]: https://github.com/sdr-ventures/kw-common/releases/tag/v1.1.0
+[1.0.1]: https://github.com/sdr-ventures/kw-common/releases/tag/v1.0.1
+[1.0.0]: https://github.com/sdr-ventures/kw-common/releases/tag/v1.0.0

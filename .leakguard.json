@@ -3,15 +3,15 @@
   "_why_nothing_about_paths": "There is no path-exemption mechanism to configure. This repository's tracked engine source is full of synthetic deny cases, and an earlier version of this file excused all eight patterns on that one path - a whole-file skip written in data, through which a real leak passed. The guard recognises its own source by its BYTES instead. A second attempt to make path exemptions configurable-but-bounded also failed, and the feature was withdrawn; src/kw_common/leakguard.py's GuardConfig records both designs and why neither worked.",
   "allow_literals": [
     {
-      "literal": "github.com/texasdaddy",
+      "literal": "github.com/sdr-ventures",
       "why": "functional: this repository's own clone URL. Inert against the shape denylist, live against the project-side real-literal guard that shares this engine."
     },
     {
-      "literal": "githubusercontent.com/texasdaddy",
+      "literal": "githubusercontent.com/sdr-ventures",
       "why": "functional: raw asset URLs. Same reasoning as the clone URL above."
     },
     {
-      "literal": "ghcr.io/texasdaddy",
+      "literal": "ghcr.io/sdr-ventures",
       "why": "functional: image pulls. Neutralizing it would break them; it is an account name, not infrastructure."
     }
   ]

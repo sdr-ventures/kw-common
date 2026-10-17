@@ -5,7 +5,8 @@ its hooks and its CI job all come from the pin, and the repository's own content
 configuration — one `.leakguard.json`, one workflow job, one dependency line.
 
 Every step below uses `vX.Y.Z` for the pin. Use the same tag everywhere it appears; a consumer
-bump is one PR that changes all of them.
+bump is one PR that changes all of them. After a bump, re-run `kw-leak-guard --install-hooks`
+from the environment that now has the new pin, so the installed hooks run the new engine.
 
 ## What every repository ends up with
 

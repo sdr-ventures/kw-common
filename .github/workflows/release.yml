@@ -4,7 +4,7 @@ name: release
 # builds the wheel + sdist and attaches them to a GitHub Release, which is what a consumer's
 # pinned install resolves against.
 #
-#   pip install git+https://github.com/texasdaddy/kw-common@vX.Y.Z
+#   pip install git+https://github.com/sdr-ventures/kw-common@vX.Y.Z
 #
 # ⭐ A TAG CAN POINT AT ANY COMMIT — including one that never went through a PR and so never ran
 # ci.yml. That is why the gates below are duplicated here rather than assumed: the guard, the

@@ -42,8 +42,8 @@ dependencies = []
 kw-leak-guard = "kw_common.leakguard:cli"
 
 [project.urls]
-Homepage = "https://github.com/texasdaddy/kw-common"
-Issues = "https://github.com/texasdaddy/kw-common/issues"
+Homepage = "https://github.com/sdr-ventures/kw-common"
+Issues = "https://github.com/sdr-ventures/kw-common/issues"
 
 [tool.setuptools.dynamic]
 # ⭐ ONE source of truth for the version: `src/kw_common/__init__.py`. Repeating the number here

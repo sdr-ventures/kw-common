@@ -135,11 +135,11 @@ def test_no_shipped_file_pins_a_version_this_package_is_not() -> None:
     # literal will find that literal in its own source — the same self-match that trips a leak
     # guard's own test file. Both halves are needed: the fragments keep the marker out of any
     # OTHER matcher, and the skip keeps this file out of its own results.
-    marker = "github.com/texasdaddy/" + "kw-common@"
+    marker = "github.com/sdr-ventures/" + "kw-common@"
     # ⭐ AND THE RAW-ASSET FORM. The setup document fetches the template by tag from
     # `raw.githubusercontent.com/<owner>/<repo>/vX.Y.Z/…` — no `@` — and those two pins were
     # outside this scan (the gate found them drifting silently at the next bump).
-    raw_marker = "raw.githubusercontent.com/texasdaddy/" + "kw-common/"
+    raw_marker = "raw.githubusercontent.com/sdr-ventures/" + "kw-common/"
     raw_expected = f"{raw_marker}v{kw_common.__version__}/"
     root = Path(__file__).resolve().parents[1]
     stale: list[str] = []
@@ -192,7 +192,7 @@ def test_the_install_line_names_the_version_this_package_actually_is() -> None:
     expected = f"@v{kw_common.__version__}"
     text = README.read_text(encoding="utf-8")
     install_lines = [ln for ln in text.splitlines()
-                     if "github.com/texasdaddy/kw-common@" in ln]
+                     if "github.com/sdr-ventures/kw-common@" in ln]
     assert install_lines, "the README no longer shows an install line to check"
     stale = [ln for ln in install_lines if expected not in ln]
     assert stale == [], (
