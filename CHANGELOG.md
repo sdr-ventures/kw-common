@@ -9,6 +9,23 @@ exported symbol that changed. ⛔ It does NOT name the consumers that need a cod
 repository is public, and honouring that older promise would publish the fleet's inventory at
 exactly the moment the release notes are read most widely.
 
+## [Unreleased]
+
+**Additions only.** Email can go out through an HTTP CONNECT proxy. A consumer that sets nothing
+changes nothing, so a consumer on `v1.8.0` changes no input to bump — MINOR (the next release). `EMAIL_KEYS` gains
+a seventh entry, `SMTP_PROXY`; no exported name was removed or changed in signature.
+
+### Added
+
+* **`SMTP_PROXY`** in the shared alerting file (optional). Set it to `host:port` or
+  `http://host:port` and the email channel connects through `CONNECT <SMTP_HOST>:<SMTP_PORT>` on
+  that proxy; unset, it connects directly exactly as before. Port 587 negotiates STARTTLS and
+  port 465 uses implicit TLS; both verify the certificate and host name against `SMTP_HOST`,
+  never the proxy. A refused (non-2xx) or unreachable proxy is an ordinary email-channel failure:
+  logged without the message body or any credential, the other channels still run, the caller
+  never sees an exception. A malformed value (a scheme other than `http`, userinfo, a path, no
+  port) is refused before any connection and is reported by `AlertConfig.setting_faults()`.
+
 ## [1.8.0] - 2026-10-16
 
 **Additions only.** No name in any module's `__all__` was removed or changed in signature, so a

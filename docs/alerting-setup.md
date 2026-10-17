@@ -105,6 +105,9 @@ version:
   `local@domain`**. A From header carrying a display name (`Alerts <box@host>`) or non-ASCII text
   is a valid header and is not a credential, so it will not be used as one — such a deployment
   must set `SMTP_USER` explicitly, and boot refuses until it does.
+* **email through a proxy** — optional `SMTP_PROXY=host:port` (or `http://host:port`) sends mail via an
+  HTTP CONNECT tunnel on that proxy; unset means a direct connection. A refused or unreachable
+  proxy fails the email channel only.
 * **ntfy** — `NTFY_URL_DEV` and `NTFY_URL_PROD` are the topics services share. Each is a **full
   URL**, never a bare topic name.
 * **a dedicated topic** — optional, one service, `NTFY_URL_<SERVICE>`. It wins over the shared

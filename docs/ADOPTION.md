@@ -211,3 +211,16 @@ git switch - && git branch -D leak-guard-check
 
 And in CI: the adoption PR shows `leak-guard / No internal info (leak guard)` green. Branch
 protection on the default branch should require exactly that check.
+
+## Sending alert email through an egress proxy
+
+A service whose only way out is an HTTP proxy that admits `CONNECT <mail host>:587` (or `:465`)
+sets one optional line in the shared alerting file and changes no code:
+
+```
+SMTP_PROXY=proxy.example.com:3128
+```
+
+Needs the kw-common release that carries `SMTP_PROXY` (see CHANGELOG). Unset, email connects directly as before. Certificate and host
+name are verified against `SMTP_HOST`, never the proxy.
+
