@@ -208,6 +208,7 @@ import logging
 import os
 import re
 import smtplib
+import socket
 import ssl
 import sys
 import time
@@ -403,7 +404,8 @@ SEVERITIES: dict[str, SeveritySpec] = {
 # never logged. These names are the FILE's schema, not an environment contract — the file is a
 # deployment artifact the operator writes, and every consumer of this library reads the same
 # shape so one shared file can serve a whole fleet.
-EMAIL_KEYS = ("EMAIL_TO", "EMAIL_FROM", "SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASSWORD")
+EMAIL_KEYS = ("EMAIL_TO", "EMAIL_FROM", "SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASSWORD",
+              "SMTP_PROXY")
 EMAIL_REQUIRED = ("EMAIL_TO", "EMAIL_FROM", "SMTP_HOST", "SMTP_USER", "SMTP_PASSWORD")
 
 DEFAULT_SMTP_PORT = 587  # STARTTLS submission
@@ -1608,8 +1610,15 @@ class AlertConfig:
         only validated setting in the shared file today, and a second one appends here rather than
         growing a new accessor and a new call site in every consumer.
         """
-        raw = (self.email or {}).get("SMTP_PORT", "").strip()
-        return [fault] if raw and (fault := smtp_port_fault(raw)) else []
+        email = self.email or {}
+        raw = email.get("SMTP_PORT", "").strip()
+        faults = [fault] if raw and (fault := smtp_port_fault(raw)) else []
+        if email.get("SMTP_PROXY"):
+            try:
+                _parse_smtp_proxy(email["SMTP_PROXY"])
+            except ValueError as exc:
+                faults.append(str(exc))
+        return faults
 
     def is_ready(self, channel: str) -> bool:
         """Is this ONE channel usable? Never raises — a config value bad enough to break its own
@@ -1636,6 +1645,75 @@ class AlertConfig:
 
 
 # --- channels ------------------------------------------------------------------------------
+def _parse_smtp_proxy(raw: str) -> tuple[str, int]:
+    """`SMTP_PROXY` as (host, port). Accepts `host:port` or `http://host:port`; nothing else.
+
+    Userinfo, other schemes and a missing port are refused by NAME only: the value may carry a
+    credential, so it is never echoed.
+    """
+    url = urlsplit(raw if "://" in raw else f"http://{raw}")
+    try:
+        port = url.port
+    except ValueError:
+        port = None
+    if (url.scheme != "http" or not url.hostname or not port or url.username or url.password
+            or url.path not in ("", "/") or url.query or url.fragment):
+        raise ValueError("SMTP_PROXY must be `host:port` or `http://host:port` (no credentials, "
+                         "no path); this alert is not being emailed")
+    return url.hostname, port
+
+
+def _open_tunnel(proxy: str, host: str, port: int, timeout: float | None) -> socket.socket:
+    """A socket to `host:port` through an HTTP CONNECT tunnel on `proxy`. Raises OSError on any
+    failure; the proxy's reply text is never surfaced, only the status code."""
+    sock = socket.create_connection(_parse_smtp_proxy(proxy), timeout)
+    try:
+        target = f"{host}:{port}"
+        request = f"CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n\r\n"
+        sock.sendall(request.encode("ascii"))
+        # One byte at a time so nothing the tunnel relays after the headers (the SMTP banner) is
+        # consumed here.
+        reply = b""
+        while not reply.endswith(b"\r\n\r\n"):
+            byte = sock.recv(1)
+            if not byte or len(reply) > 8192:
+                raise OSError("the proxy closed the connection or sent an oversized CONNECT reply")
+            reply += byte
+        parts = reply.split(None, 2)
+        status = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 0
+        if not 200 <= status < 300:
+            raise OSError(f"the proxy refused CONNECT (status {status or 'unreadable'})")
+    except BaseException:
+        sock.close()
+        raise
+    return sock
+
+
+class _TunnelSMTP(smtplib.SMTP):
+    """`smtplib.SMTP` whose TCP connection goes through `_open_tunnel`. Subclasses the real class
+    at import, so tests that replace `smtplib.SMTP` for the direct path do not affect it."""
+
+    def __init__(self, proxy: str, host: str, port: int, timeout: float) -> None:
+        self._proxy = proxy
+        super().__init__(host, port, timeout=timeout)
+
+    def _get_socket(self, host: str, port: int, timeout: float | None) -> socket.socket:
+        return _open_tunnel(self._proxy, host, port, timeout)
+
+
+class _TunnelSMTPSSL(_TunnelSMTP):
+    """As `_TunnelSMTP`, with implicit TLS verified against the mail host. Not `smtplib.SMTP_SSL`:
+    that class re-enters the module-level `SMTP` name, which the test suite replaces."""
+
+    def _get_socket(self, host: str, port: int, timeout: float | None) -> socket.socket:
+        sock = super()._get_socket(host, port, timeout)
+        try:
+            return ssl.create_default_context().wrap_socket(sock, server_hostname=host)
+        except BaseException:
+            sock.close()
+            raise
+
+
 def _send_email(cfg: AlertConfig, spec: SeveritySpec, title: str, message: str) -> None:
     lg = cfg._log
     email = cfg.email or {}
@@ -1671,13 +1749,25 @@ def _send_email(cfg: AlertConfig, spec: SeveritySpec, title: str, message: str) 
     # do not pin one outcome here. See `_recipients`.
     msg["To"] = recipients(email["EMAIL_TO"])
     msg.set_content(message)
-    with smtplib.SMTP(email["SMTP_HOST"], cfg.smtp_port(), timeout=SMTP_TIMEOUT_S) as smtp:
+    port = cfg.smtp_port()
+    proxy = email.get("SMTP_PROXY", "")
+    # Port 465 is implicit TLS; the tunnel carries it as-is and the TLS handshake (and its host-name
+    # check) is against `SMTP_HOST`, never the proxy. Direct sends keep today's STARTTLS-only shape.
+    implicit_tls = bool(proxy) and port == 465
+    if proxy:
+        _parse_smtp_proxy(proxy)  # a bad value fails here, before any connection
+        smtp_cls = _TunnelSMTPSSL if implicit_tls else _TunnelSMTP
+        conn: smtplib.SMTP = smtp_cls(proxy, email["SMTP_HOST"], port, SMTP_TIMEOUT_S)
+    else:
+        conn = smtplib.SMTP(email["SMTP_HOST"], port, timeout=SMTP_TIMEOUT_S)
+    with conn as smtp:
         # `starttls()` with no context does NOT verify the server: smtplib falls back to
         # `ssl._create_stdlib_context()`, which is check_hostname=False / CERT_NONE. The channel
         # would be encrypted but unauthenticated, so anyone able to intercept the egress could
         # present any certificate and collect the app password on the next login() — which is
         # the whole reason that password lives in a file rather than the environment.
-        smtp.starttls(context=ssl.create_default_context())
+        if not implicit_tls:
+            smtp.starttls(context=ssl.create_default_context())
         smtp.login(email["SMTP_USER"], email["SMTP_PASSWORD"])
         refused = smtp.send_message(msg)
     # `isinstance`, not truthiness: `send_message` returns the refused-recipient DICT on every
