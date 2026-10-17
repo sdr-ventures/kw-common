@@ -18,9 +18,9 @@ no second literal to forget. The release workflow additionally asserts the git T
 
 Consumers pin an exact git tag, never a branch:
 
-    pip install git+https://github.com/sdr-ventures/kw-common@v1.7.1
+    pip install git+https://github.com/sdr-ventures/kw-common@v1.8.0
 """
 
 __all__ = ["__version__"]
 
-__version__ = "1.7.1"
+__version__ = "1.8.0"

@@ -9,7 +9,10 @@ exported symbol that changed. ⛔ It does NOT name the consumers that need a cod
 repository is public, and honouring that older promise would publish the fleet's inventory at
 exactly the moment the release notes are read most widely.
 
-## [Unreleased]
+## [1.8.0] - 2026-10-16
+
+**Additions only.** No name in any module's `__all__` was removed or changed in signature, so a
+consumer on `v1.7.1` changes no input to bump — MINOR.
 
 ### Added
 
@@ -19,7 +22,7 @@ exactly the moment the release notes are read most widely.
   the state file use). The `_now` and `_sink_problem` spellings remain as they were; `_CHANNELS`
   stays private.
 
-## [1.7.1] - Unreleased
+## [1.7.1] - 2026-10-11
 
 **Closes the gaps the first seven adoptions of the 1.7.0 leak guard found.** No name in any
 module's `__all__` was removed or changed in signature, and a consumer on `v1.7.0` changes no
