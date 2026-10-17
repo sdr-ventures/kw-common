@@ -245,6 +245,16 @@ __all__ = [
     "parse_env_file",
     "escalate_gap_hours",
     "is_cert_failure",
+    # The clock the escalation backoff reads, and the hook a test uses to drive it. `set_clock`
+    # replaces it process-wide; `now` reads it. Both are the public names for the `_now` seam.
+    "now",
+    "set_clock",
+    # The channel names `notify()` fans out to. The registry itself stays private: it holds the
+    # send callables, and promising its shape would promise more than a name list needs.
+    "channel_names",
+    # The filesystem check the error log and the state file use, asked the way their writers
+    # ask. The `_sink_problem` spelling is an alias.
+    "sink_problem",
     "EMAIL_KEYS",
     "EMAIL_REQUIRED",
     "DEFAULT_SMTP_PORT",
@@ -447,10 +457,31 @@ MAX_RECORD_FIELD = 4000
 _MISSING = object()
 
 
+_clock: Callable[[], float] = time.time
+
+
 def _now() -> float:
     """Wall clock, behind a name of its own so a test can drive the backoff without sleeping
-    through it — and without patching `time` for the whole process."""
-    return time.time()
+    through it — and without patching `time` for the whole process. Every reader in this module
+    goes through it, so patching `_now` and calling `set_clock` both reach the backoff."""
+    return _clock()
+
+
+def now() -> float:
+    """The clock this module reads: seconds since the epoch, as `time.time()` returns them."""
+    return _now()
+
+
+def set_clock(clock: Callable[[], float] | None) -> Callable[[], float]:
+    """Replace the clock this module reads, so a test can drive the escalation backoff.
+
+    `None` restores `time.time`. Returns the clock it replaced, so a test restores it with
+    `set_clock(previous)`. Process-wide: a test that calls it must restore it.
+    """
+    global _clock
+    previous = _clock
+    _clock = time.time if clock is None else clock
+    return previous
 
 
 def _usable_path(value: object) -> str | None:
@@ -1777,6 +1808,11 @@ _CHANNELS: tuple[tuple[str, Callable[[AlertConfig, SeveritySpec, str, str], None
 )
 
 
+def channel_names() -> tuple[str, ...]:
+    """The names of the channels `notify()` fans out to, in the order it tries them."""
+    return tuple(name for name, _ in _CHANNELS)
+
+
 # --- error-log helpers (pure; the Alerter supplies the paths) ----------------------------------
 def _restrict(path: str, mode: int, *, logger: logging.Logger | None = None) -> None:
     """Narrow an EXISTING path's permissions. Silent on success; WARNS when it cannot.
@@ -2145,8 +2181,8 @@ def _title_prefix(settings: object) -> str:
 _SEPARATORS = tuple(sep for sep in (os.sep, os.altsep) if sep)
 
 
-def _sink_problem(path: str, *, label: str, creates_directories: bool,
-                  appends_in_place: bool) -> str:
+def sink_problem(path: str, *, label: str, creates_directories: bool,
+                 appends_in_place: bool) -> str:
     """Why a file this module will WRITE cannot be, or `""` — asked the way the writer will ask.
 
     ⭐⭐ THE QUESTION IS "CAN THE SINK BE CREATED", NOT "DOES ITS DIRECTORY EXIST" (#23). The
@@ -2238,6 +2274,11 @@ def _sink_problem(path: str, *, label: str, creates_directories: bool,
     return ""
 
 
+# The spelling this module used before `sink_problem` was exported. An alias, not a second
+# function, and not under semver: the promised name is the one in `__all__`.
+_sink_problem = sink_problem
+
+
 @dataclass(frozen=True)
 class Alerter:
     """One service's alerting, bound to its injected settings.
@@ -2299,8 +2340,8 @@ class Alerter:
                         "variable; pass None to disable de-duplication deliberately, or a path "
                         "to enable it")
             # Asked the way `_write_state` writes: no `makedirs`, and a rename over the leaf.
-            return _sink_problem(path, label="state_file", creates_directories=False,
-                                 appends_in_place=False)
+            return sink_problem(path, label="state_file", creates_directories=False,
+                                appends_in_place=False)
         except Exception as exc:  # noqa: BLE001 — a diagnostic must not become the failure
             # Broad on purpose, and not narrowed to the one failure that came to mind: this runs
             # on the alerting path, called from notify(), so ANY escape takes down the alert it
@@ -2328,10 +2369,10 @@ class Alerter:
                         "alerts are in the process log only. This is almost always an unset "
                         "environment variable; pass None to disable the sink deliberately")
             # Asked the way `_append_error_record` writes: `makedirs` the directory, then open
-            # the leaf for append. `_sink_problem` walks to the first existing ancestor and asks
+            # the leaf for append. `sink_problem` walks to the first existing ancestor and asks
             # about THAT (#22, #23) — see its docstring for the states the old arms got wrong.
-            return _sink_problem(path, label="error_log", creates_directories=True,
-                                 appends_in_place=True)
+            return sink_problem(path, label="error_log", creates_directories=True,
+                                appends_in_place=True)
         except Exception as exc:  # noqa: BLE001 — a diagnostic must not become the failure
             return f"error_log could not be checked ({type(exc).__name__})"
 

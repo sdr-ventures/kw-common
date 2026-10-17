@@ -9,6 +9,16 @@ exported symbol that changed. ⛔ It does NOT name the consumers that need a cod
 repository is public, and honouring that older promise would publish the fleet's inventory at
 exactly the moment the release notes are read most widely.
 
+## [Unreleased]
+
+### Added
+
+* `kw_common.alerting` exports four names that were private: `now()` and `set_clock(fn)` (the clock
+  the escalation backoff reads, and the hook a test replaces it with), `channel_names()` (the
+  channels `notify()` fans out to) and `sink_problem()` (the writability check the error log and
+  the state file use). The `_now` and `_sink_problem` spellings remain as they were; `_CHANNELS`
+  stays private.
+
 ## [1.7.1] - Unreleased
 
 **Closes the gaps the first seven adoptions of the 1.7.0 leak guard found.** No name in any

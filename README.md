@@ -71,6 +71,12 @@ Everything the module needs is passed in. It reads no environment variable and h
 path — see the contract below, and the module's own docstring for the full behaviour (severities,
 `escalating=`, `clears=`, and the error log's exposure warning).
 
+Four more names are public, each under semver: `now()` reads the clock the escalation backoff
+uses, and `set_clock(fn)` replaces it for a test (it returns the clock it replaced; `None` restores
+`time.time`). `channel_names()` lists the channels `notify()` fans out to, in order.
+`sink_problem(path, label=…, creates_directories=…, appends_in_place=…)` says why a file this
+module writes cannot be created, or `""` if it can.
+
 ⭐ **`logger_name` is configuration like everything else.** A logger name is an operator-facing
 surface: a per-logger level, a filter, or a log shipper's routing is written against it, so a
 service that has always emitted its alerting on its own name would otherwise have every record
