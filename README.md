@@ -16,13 +16,13 @@ no port, no alignment audit, and no "which copy is the good one" question to ans
 Consumers install from git at an **exact tag** — never a branch:
 
 ```
-pip install git+https://github.com/sdr-ventures/kw-common@v1.7.1
+pip install git+https://github.com/sdr-ventures/kw-common@v1.8.0
 ```
 
 In a `requirements.in` / `requirements.txt`:
 
 ```
-kw-common @ git+https://github.com/sdr-ventures/kw-common@v1.7.1
+kw-common @ git+https://github.com/sdr-ventures/kw-common@v1.8.0
 ```
 
 ⛔ **Never pin a branch.** `@main` makes every rebuild of every consumer a silent, unreviewed
@@ -263,8 +263,8 @@ The tag and `kw_common.__version__` must agree; the release workflow refuses the
 do not. `src/kw_common/__init__.py` is the single source of the version — `pyproject.toml` reads
 it dynamically.
 
-A **release candidate** is the tag `v<version>rcN` (for example `v1.7.1rc1` while
-`__version__` is `1.7.1`), cut from the PR branch before merge. It publishes as a GitHub
+A **release candidate** is the tag `v<version>rcN` (for example `v1.8.0rc1` while
+`__version__` is `1.8.0`), cut from the PR branch before merge. It publishes as a GitHub
 **pre-release** of that version, so a consumer's `dev` line can pin it; the final `v<version>` tag
 is cut on `main` after the merge. Any other tag that does not equal `v<version>` is refused.
 
