@@ -3891,6 +3891,56 @@ def test_the_four_pure_helpers_the_adopter_tested_are_EXPORTED_and_the_old_spell
     assert alerting.is_cert_failure(ssl.SSLCertVerificationError("bad")) is True
 
 
+def test_the_clock_channel_and_sink_seams_are_public_and_reach_the_real_code(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Three names a consumer imported with an underscore, promoted (kw-common issue #50). Each is
+    checked through its public name AND through the behaviour the consumer depends on, so a
+    rename or a dead alias cannot pass."""
+    for name in ("now", "set_clock", "channel_names", "sink_problem"):
+        assert name in alerting.__all__, f"{name} is not under semver"
+    assert alerting._sink_problem is alerting.sink_problem
+
+    # set_clock replaces the clock the library reads, returns the one it replaced, and None
+    # restores time.time.
+    def fixed() -> float:
+        return 1234.5
+
+    alerting.set_clock(fixed)
+    assert alerting.now() == 1234.5 and alerting._now() == 1234.5
+    assert alerting.set_clock(None) is fixed
+    assert abs(alerting.now() - time.time()) < 60
+
+    # channel_names follows the registry at call time, not a snapshot taken at import.
+    assert alerting.channel_names() == ("email", "ntfy")
+    monkeypatch.setattr(alerting, "_CHANNELS", (("ntfy", None),))
+    assert alerting.channel_names() == ("ntfy",)
+
+    # sink_problem answers the way the writers ask: a creatable sink is clean, a file standing
+    # where the directory should be is named as the problem.
+    assert alerting.sink_problem(str(tmp_path / "logs" / "errors.log"), label="error_log",
+                                 creates_directories=True, appends_in_place=True) == ""
+    blocker = tmp_path / "blocker"
+    blocker.write_text("not a directory", encoding="utf-8")
+    problem = alerting.sink_problem(str(blocker / "errors.log"), label="error_log",
+                                    creates_directories=True, appends_in_place=True)
+    assert problem.startswith("error_log"), problem
+
+
+def test_set_clock_drives_the_escalation_backoff(
+        alerter: Alerter, channels: dict[str, Spy]) -> None:
+    """The public clock is the one the backoff reads: no `_now` patch involved."""
+    clock = {"t": 1_000_000.0}
+    previous = alerting.set_clock(lambda: clock["t"])
+    try:
+        assert alerter.notify(ERROR, "svc: lapsing", "1", escalating=True)["ntfy"] == "sent"
+        clock["t"] += 59 * 60
+        assert alerter.notify(ERROR, "svc: lapsing", "2", escalating=True)["ntfy"] == "suppressed"
+        clock["t"] += 2 * 60
+        assert alerter.notify(ERROR, "svc: lapsing", "3", escalating=True)["ntfy"] == "sent"
+    finally:
+        alerting.set_clock(previous)
+
+
 def test_the_logger_is_INJECTED_so_a_consumer_keeps_its_own_name(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """⭐ consumer#51. A logger NAME is an operator-facing surface — a per-logger level, a filter,
