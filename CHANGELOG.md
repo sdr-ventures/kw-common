@@ -9,6 +9,19 @@ exported symbol that changed. ⛔ It does NOT name the consumers that need a cod
 repository is public, and honouring that older promise would publish the fleet's inventory at
 exactly the moment the release notes are read most widely.
 
+## [Unreleased]
+
+**Additions only.** A test can replace the process alerter for one scope without touching a
+private name.
+
+### Added
+
+* **`alerter_scope(alerter)`** in `kw_common.alerting`: a context manager that installs an
+  `Alerter`, a stub with the same methods, or `None` (alerting disabled) as the process default
+  for the `with` block, and restores the previous default on normal exit and on an exception.
+  Scopes nest and restore in reverse order. `docs/alerting-setup.md` section 8 shows the test
+  pattern.
+
 ## [1.9.0] - 2026-10-17
 
 **Additions only.** Email can go out through an HTTP CONNECT proxy. A consumer that sets nothing

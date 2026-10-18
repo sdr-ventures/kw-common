@@ -2924,6 +2924,68 @@ def test_configure_replaces_a_previous_default(settings: AlertSettings) -> None:
     assert second is not first
 
 
+class _StubAlerter:
+    """Has the two methods the module-level functions call on the default, and records them."""
+
+    def __init__(self) -> None:
+        self.notified: list[str] = []
+
+    def notify(self, severity: str, title: str, message: str, **_: object) -> dict[str, str]:
+        self.notified.append(title)
+        return {"stub": "sent"}
+
+    def warn_if_unconfigured(self) -> list[str]:
+        return []
+
+
+def test_alerter_scope_installs_for_the_block_and_restores_on_normal_exit(
+        settings: AlertSettings) -> None:
+    before = alerting.configure(settings)
+    stub = _StubAlerter()
+    with alerting.alerter_scope(stub) as inside:
+        assert inside is stub
+        assert alerting.current_alerter() is stub
+        assert alerting.notify(ERROR, "svc: inside", "...") == {"stub": "sent"}
+    assert alerting.current_alerter() is before
+    assert stub.notified == ["svc: inside"]
+
+
+def test_alerter_scope_restores_on_an_exception_and_lets_it_propagate(
+        settings: AlertSettings) -> None:
+    before = alerting.configure(settings)
+    with pytest.raises(RuntimeError, match="boom"), alerting.alerter_scope(_StubAlerter()):
+        raise RuntimeError("boom")
+    assert alerting.current_alerter() is before
+
+
+def test_alerter_scope_restores_none_when_nothing_was_configured() -> None:
+    with alerting.alerter_scope(_StubAlerter()):
+        pass
+    assert alerting.current_alerter() is None
+
+
+def test_nested_alerter_scopes_restore_in_reverse_order(settings: AlertSettings) -> None:
+    outer_default = alerting.configure(settings)
+    outer = _StubAlerter()
+    inner = _StubAlerter()
+    with alerting.alerter_scope(outer):
+        with alerting.alerter_scope(inner):
+            assert alerting.current_alerter() is inner
+        assert alerting.current_alerter() is outer
+    assert alerting.current_alerter() is outer_default
+
+
+def test_alerter_scope_none_disables_alerting_inside_the_block(
+        settings: AlertSettings, channels: dict[str, Spy],
+        caplog: pytest.LogCaptureFixture) -> None:
+    alerting.configure(settings)
+    with caplog.at_level(logging.ERROR, logger="kw_common.alerting"), alerting.alerter_scope(None):
+        results = alerting.notify(ERROR, "svc: silenced", "...")
+    assert results == {"email": "skipped", "ntfy": "skipped"}
+    assert channels["ntfy"].calls == []
+    assert alerting.current_alerter() is not None
+
+
 # =============================================== the ntfy channel follows no redirect (#4)
 # These are the only tests in this suite that open a socket, and they are marked
 # `allow_loopback` to say so. They have to: what is under test is what `urllib`'s OWN handler
