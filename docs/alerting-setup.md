@@ -241,3 +241,30 @@ app password being revoked at the provider, DNS moving. Boot validation answers 
 configuration well-formed and sendable-looking", never "is the far end still there" — that is what
 a periodic self-test is for. The fleet standard requires one of every adopter; this library does
 not implement it, and nothing in it is scheduled.
+
+## 8. Tests: swap the alerter for one scope
+
+Code under test that calls `notify()` reaches the process default. Install a stub or `None` for the
+test with `alerter_scope`, which restores the previous default on normal exit and on an exception:
+
+```python
+from unittest.mock import Mock
+
+from kw_common.alerting import ERROR, alerter_scope, notify
+
+
+def test_outage_is_reported():
+    stub = Mock()
+    with alerter_scope(stub):
+        notify(ERROR, "svc: outage", "database unreachable")
+    stub.notify.assert_called_once_with(ERROR, "svc: outage", "database unreachable",
+                                        escalating=False, clears=None)
+
+
+def test_quiet_path_sends_nothing():
+    with alerter_scope(None):  # alerting disabled inside the block
+        notify(ERROR, "svc: outage", "database unreachable")
+```
+
+Scopes nest, and each one restores the default it found. Do not write `kw_common.alerting._default`
+directly: it is private, and `configure()` cannot set it to `None`.

@@ -3157,23 +3157,25 @@ def test_the_setup_documents_python_example_uses_only_names_it_imports() -> None
     import re
 
     blocks = re.findall(r"```python\n(.*?)```", SETUP_DOC.read_text(encoding="utf-8"), re.S)
-    assert len(blocks) == 1, f"expected one python block in the setup document, found {len(blocks)}"
-    tree = ast.parse(blocks[0])
+    assert blocks, "the setup document has no python block to check"
+    for block in blocks:
+        tree = ast.parse(block)
 
-    available: set[str] = set(dir(builtins))
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom):
-            available.update(a.asname or a.name for a in node.names)
-            if node.module and node.module.startswith("kw_common"):
-                mod = importlib.import_module(node.module)
-                for alias in node.names:
-                    assert alias.name in getattr(mod, "__all__", ()), (
-                        f"the setup document imports {alias.name!r} from {node.module}, which "
-                        f"does not export it")
-        elif isinstance(node, ast.Import):
-            available.update((a.asname or a.name).split(".")[0] for a in node.names)
-        elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
-            available.add(node.id)
+        available: set[str] = set(dir(builtins))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                available.update(a.asname or a.name for a in node.names)
+                if node.module and node.module.startswith("kw_common"):
+                    mod = importlib.import_module(node.module)
+                    for alias in node.names:
+                        assert alias.name in getattr(mod, "__all__", ()), (
+                            f"the setup document imports {alias.name!r} from {node.module}, which "
+                            f"does not export it")
+            elif isinstance(node, ast.Import):
+                available.update((a.asname or a.name).split(".")[0] for a in node.names)
+            elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+                available.add(node.id)
 
-    used = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)}
-    assert sorted(used - available) == []
+        used = {n.id for n in ast.walk(tree)
+                if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)}
+        assert sorted(used - available) == []

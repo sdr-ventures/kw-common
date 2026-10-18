@@ -214,7 +214,7 @@ import sys
 import time
 import urllib.request
 from collections import deque
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from email.message import EmailMessage
@@ -232,6 +232,7 @@ __all__ = [
     "Alerter",
     "configure",
     "current_alerter",
+    "alerter_scope",
     "notify",
     "warn_if_unconfigured",
     "smtp_port_fault",
@@ -3084,6 +3085,23 @@ def configure(settings: AlertSettings) -> Alerter:
 def current_alerter() -> Alerter | None:
     """The installed process default, or `None` if `configure()` has not been called."""
     return _default
+
+
+@contextlib.contextmanager
+def alerter_scope(alerter: Alerter | None) -> Iterator[Alerter | None]:
+    """Install `alerter` as the process default for the `with` block, then restore the previous one.
+
+    `alerter` may be an `Alerter`, a test stub with the same methods, or `None` (alerting disabled
+    inside the block). The previous default is restored on normal exit and on an exception, and
+    nested scopes restore in reverse order.
+    """
+    global _default
+    previous = _default
+    _default = alerter
+    try:
+        yield alerter
+    finally:
+        _default = previous
 
 
 # ⭐ Every message in the two functions below is formatted LAZILY by `logging` (`%s`/`%r` with
