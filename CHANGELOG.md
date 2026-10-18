@@ -9,10 +9,10 @@ exported symbol that changed. ⛔ It does NOT name the consumers that need a cod
 repository is public, and honouring that older promise would publish the fleet's inventory at
 exactly the moment the release notes are read most widely.
 
-## [Unreleased]
+## [1.9.0] - 2026-10-17
 
 **Additions only.** Email can go out through an HTTP CONNECT proxy. A consumer that sets nothing
-changes nothing, so a consumer on `v1.8.0` changes no input to bump — MINOR (the next release). `EMAIL_KEYS` gains
+changes nothing, so a consumer on `v1.8.0` changes no input to bump — MINOR. `EMAIL_KEYS` gains
 a seventh entry, `SMTP_PROXY`; no exported name was removed or changed in signature.
 
 ### Added
