@@ -335,6 +335,21 @@ def _settings_logger_name(settings: object) -> str:
     return name if isinstance(name, str) else ""
 
 
+def _smtp_proxy_override(settings: object) -> str | None:
+    """`settings.smtp_proxy` stripped, or `None` to leave the file's value alone. Never raises.
+
+    Same contract as `_settings_logger_name`: an `Alerter` takes any settings-shaped object, and a
+    property that raises must not cost the config load. Anything that is not a string is treated
+    as absent, so an object that never went through `AlertSettings` cannot blank a proxy by
+    accident.
+    """
+    try:
+        value = getattr(settings, "smtp_proxy", None)
+    except Exception:  # noqa: BLE001 — the override is optional; the file is the default
+        return None
+    return value.strip() if isinstance(value, str) else None
+
+
 # ⭐ THE `SMTP_PORT` COMPLAINT IS MADE ONCE PER DISTINCT VALUE, PER CONFIG (consumer#46).
 # The config file is re-read on every delivered notification — deliberately, so a rotated password
 # takes effect without a restart — and `smtp_port()` is asked on every send, so one mistyped port
@@ -726,6 +741,10 @@ class AlertSettings:
                    has always logged its alerting on its own name keeps it here rather than by
                    rebinding a module global — see `_logger_named`.
 
+    `smtp_proxy`   `None` (the default) leaves the file's `SMTP_PROXY` in charge. A string replaces
+                   it for this service; `""` means a direct connection even when the file names a
+                   proxy. See the field's comment below the docstring.
+
     The remaining fields are the sizing knobs. They are constructor arguments rather than module
     constants a consumer is expected to edit after install, because an edited install is a fork.
     """
@@ -761,6 +780,12 @@ class AlertSettings:
     # NAME of the logger, not a logger object: settings are frozen, picklable data, and a name is
     # what an operator's logging configuration is written against.
     logger_name: str = ""
+    # ⭐ APPENDED, defaulted to `None` so it is inert for every existing caller. `None` means the
+    # shared file's `SMTP_PROXY` decides. A string REPLACES that value for this service, and `""`
+    # means no proxy even when the file sets one. `alerting_env` fills it from the `SMTP_PROXY`
+    # environment variable, so one container can tunnel mail while the shared file serves hosts
+    # that connect directly.
+    smtp_proxy: str | None = None
 
     def __post_init__(self) -> None:
         # Raising here is deliberate and does NOT weaken the "notify() never raises" invariant:
@@ -771,6 +796,8 @@ class AlertSettings:
             raise ValueError("AlertSettings.service must be a non-blank name for this service")
         # Normalise once so nothing downstream has to remember to strip it.
         object.__setattr__(self, "service", self.service.strip())
+        if self.smtp_proxy is not None and not isinstance(self.smtp_proxy, str):
+            raise ValueError("AlertSettings.smtp_proxy must be a string, or None for the file's")
 
         # ⭐⭐ A BLANK PATH IS REFUSED, NOT TREATED AS "OFF". This is the single likeliest way to
         # misconfigure this library, and it used to fail SILENTLY in the worst direction.
@@ -1238,6 +1265,12 @@ class AlertConfig:
                       exc_info=True)
                 parsed = {}
         email = {k: parsed.get(k, "").strip() for k in EMAIL_KEYS}
+        # Applied on every load, like the file: the override is part of the settings, and the
+        # settings are what every send is built from. It goes in before `setting_faults` and the
+        # send path read `email`, so both judge the value that will be used.
+        override = _smtp_proxy_override(settings)
+        if override is not None:
+            email["SMTP_PROXY"] = override
         # ⭐ `SMTP_USER` IS OPTIONAL AND DEFAULTS TO `EMAIL_FROM`. They are the same value in this
         # fleet today and they are NOT the same thing: `SMTP_USER` is the AUTH IDENTITY the relay
         # checks, `EMAIL_FROM` is the header the recipient reads. They diverge on a verified alias

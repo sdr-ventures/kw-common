@@ -32,6 +32,9 @@ Every alerting app declares exactly these, and nothing else about alerting:
 | `CONFIG_PATH` | read-write | the app's **own** directory. It writes its boot marker here. |
 | `DEPLOY_ENV` | — | `prod` or `dev`. Case-insensitive; `kw-common` lowercases it. |
 
+One further variable is optional and is not part of the three: `SMTP_PROXY`. Set it to override
+the shared file's `SMTP_PROXY` for this service. Unset, the file decides.
+
 There is **no default for any of them**. A missing variable is an error at boot, on purpose: a
 default would point at the wrong deployment silently, and the symptom of that is an incident that
 produced no page.
@@ -106,7 +109,10 @@ version:
   is a valid header and is not a credential, so it will not be used as one — such a deployment
   must set `SMTP_USER` explicitly, and boot refuses until it does.
 * **email through a proxy** — optional `SMTP_PROXY=host:port` (or `http://host:port`) sends mail via an
-  HTTP CONNECT tunnel on that proxy; unset means a direct connection. A refused or unreachable
+  HTTP CONNECT tunnel on that proxy; unset means a direct connection. A service's own `SMTP_PROXY`
+  environment variable overrides the file's value for that service only: set to an address it
+  replaces the file's; set but empty it means a direct connection even when the file names a proxy;
+  unset it leaves the file in charge. Boot logs which of the three applied, never the value. A refused or unreachable
   proxy fails the email channel only.
 * **ntfy** — `NTFY_URL_DEV` and `NTFY_URL_PROD` are the topics services share. Each is a **full
   URL**, never a bare topic name.

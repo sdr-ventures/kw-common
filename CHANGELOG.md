@@ -9,6 +9,22 @@ exported symbol that changed. ⛔ It does NOT name the consumers that need a cod
 repository is public, and honouring that older promise would publish the fleet's inventory at
 exactly the moment the release notes are read most widely.
 
+## [Unreleased]
+
+**Additions only.** A container can set its own `SMTP_PROXY`. A consumer that sets no such
+environment variable changes nothing, so a consumer on `v1.10.0` changes no input to bump — MINOR.
+No exported name was removed or changed in signature. `AlertSettings` gains a defaulted field.
+
+### Added
+
+* **`SMTP_PROXY` environment variable** (read by `kw_common.alerting_env`). When set it replaces the
+  shared file's `SMTP_PROXY` for that service. Set but empty means a direct connection even when
+  the file names a proxy. Unset leaves the file in charge, as before.
+* **`AlertSettings.smtp_proxy`** (`str | None`, default `None`), the field the variable fills.
+  `load_alert_settings` takes it as a keyword argument.
+* **Boot log** names where the proxy setting came from (`environment`, `file` or `unset`), never
+  its value.
+
 ## [1.10.0] - 2026-10-17
 
 **Additions only.** A test can replace the process alerter for one scope without touching a

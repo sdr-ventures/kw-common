@@ -45,6 +45,11 @@ variable                mode       purpose
 signature is fixed by the standard, so every function here says which it means, and the marker
 parameter is spelled `marker_dir` rather than repeating the ambiguity.
 
+⭐ ONE OPTIONAL VARIABLE OVERRIDES A FILE VALUE: ``SMTP_PROXY``. It is read at boot, and when it is
+SET it replaces the shared file's ``SMTP_PROXY`` for this service. Set but empty means a direct
+connection even when the file names a proxy. Unset means the file decides, as it always has. Only
+the source is logged at boot, never the value.
+
 ## The file
 
     EMAIL_TO EMAIL_FROM SMTP_HOST SMTP_PORT SMTP_USER SMTP_PASSWORD
@@ -141,6 +146,8 @@ class AlertEnvError(RuntimeError):
 SHARED_ROOT_VAR = "SHARED_ROOT"
 CONFIG_PATH_VAR = "CONFIG_PATH"
 DEPLOY_ENV_VAR = "DEPLOY_ENV"
+# The one OPTIONAL variable. Not in the standard's required three: unset, the shared file decides.
+SMTP_PROXY_VAR = "SMTP_PROXY"
 
 # The ONE path this module knows, and it is a RELATIVE one — the shared root it hangs off is
 # always supplied. `configs/` and nothing else lives under the shared root.
@@ -360,12 +367,18 @@ def read_config(config_path: str | os.PathLike[str]) -> dict[str, str]:
 
 # --- layer one: pure -----------------------------------------------------------------------------
 def load_alert_settings(config_path: str | os.PathLike[str], deploy_env: str,
-                        service: str, *, logger_name: str = "") -> AlertSettings:
+                        service: str, *, logger_name: str = "",
+                        smtp_proxy: str | None = None) -> AlertSettings:
     """Build `AlertSettings` from an explicit config file, environment and service name.
 
     Pure in the sense that matters: it reads NO environment variable and has NO default path.
     Everything it needs is an argument, which is what makes it usable outside this deployment and
     testable without touching `os.environ`.
+
+    `smtp_proxy` is the `SMTP_PROXY` environment value, or `None` when that variable is unset. It
+    is passed in rather than read here, for the same reason as every other value above.
+    `load_alert_settings_from_env` supplies it. Set (even to `""`) it replaces the file's value,
+    and `""` means a direct connection. `None` leaves the file in charge.
 
     ⚠️ `config_path` IS THE alerting.env FILE, not the `CONFIG_PATH` variable (which is the app's
     own read-write directory — see the module docstring; `validate_boot` calls that one
@@ -425,6 +438,15 @@ def load_alert_settings(config_path: str | os.PathLike[str], deploy_env: str,
     service = service.strip()
     values = read_config(config_path)
 
+    # ⭐ THE SOURCE IS LOGGED AND THE VALUE NEVER IS. The value is a proxy address, but a malformed
+    # one can carry a credential, and a boot line that echoes it would publish that credential.
+    file_proxy = values.get("SMTP_PROXY", "").strip()
+    proxy_source = ("environment" if smtp_proxy is not None
+                    else "file" if file_proxy else "unset")
+    effective = smtp_proxy.strip() if smtp_proxy is not None else file_proxy
+    log.info("alerting: SMTP_PROXY from %s — email %s", proxy_source,
+             "goes through a proxy" if effective else "connects directly")
+
     override = values.get(key, "").strip()
     if override:
         ntfy_url = override
@@ -454,6 +476,7 @@ def load_alert_settings(config_path: str | os.PathLike[str], deploy_env: str,
         ntfy_url=ntfy_url,
         title_prefix=title_prefix,
         logger_name=logger_name,
+        smtp_proxy=smtp_proxy,
     )
 
 
@@ -479,6 +502,15 @@ def _require_env(name: str) -> str:
             f"{name} is set to an empty value, which is what an unfilled container Variable "
             f"looks like. Give it a value or remove it; blank is not a default.")
     return value.strip()
+
+
+def _optional_env(name: str) -> str | None:
+    """One OPTIONAL environment variable: its value, or `None` when it is not set at all.
+
+    The second and last read site in this module. `None` and `""` mean different things to the
+    caller, so this returns the raw value and never a default.
+    """
+    return os.environ.get(name)
 
 
 def load_alert_settings_from_env(service: str, *, logger_name: str = "") -> AlertSettings:
@@ -517,8 +549,10 @@ def load_alert_settings_from_env(service: str, *, logger_name: str = "") -> Aler
             f"the volume was never added to the template, was added with a host path that does not "
             f"exist, or the value names something that is not a directory at all. It is the "
             f"{SHARED_ROOT_VAR} variable.")
+    # `None` when unset, so the file decides. A set-but-blank variable is `""` and clears the proxy.
     return load_alert_settings(config_file_for(shared_root), deploy_env, service,
-                               logger_name=logger_name)
+                               logger_name=logger_name,
+                               smtp_proxy=_optional_env(SMTP_PROXY_VAR))
 
 
 # --- boot validation -----------------------------------------------------------------------------

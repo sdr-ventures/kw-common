@@ -224,3 +224,10 @@ SMTP_PROXY=proxy.example.com:3128
 Needs the kw-common release that carries `SMTP_PROXY` (see CHANGELOG). Unset, email connects directly as before. Certificate and host
 name are verified against `SMTP_HOST`, never the proxy.
 
+A single container can set its own proxy with the `SMTP_PROXY` environment variable, which takes
+precedence over the shared file for that container only. Use this when containers on one host need
+different answers, for example one on an isolated network that must tunnel and others that connect
+directly. Set it to `host:port` to use a proxy, set it blank to connect directly, or leave it unset
+to keep the file's value. The same rules for the value apply. Needs the kw-common release that
+carries the override (see CHANGELOG).
+
