@@ -11,6 +11,8 @@ exactly the moment the release notes are read most widely.
 
 ## [Unreleased]
 
+## [1.11.0] - 2026-10-19
+
 **Additions only.** A container can set its own `SMTP_PROXY`. A consumer that sets no such
 environment variable changes nothing, so a consumer on `v1.10.0` changes no input to bump — MINOR.
 No exported name was removed or changed in signature. `AlertSettings` gains a defaulted field.
