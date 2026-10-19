@@ -49,6 +49,10 @@ ALLOWED_INTERNAL_IMPORTS: dict[str, set[str]] = {"alerting_env": {"alerting"}}
 # The module that reads the process environment on purpose, and the ONLY names it may read.
 ENVIRONMENT_READER = "alerting_env"
 DECLARED_VARIABLES = {"SHARED_ROOT", "CONFIG_PATH", "DEPLOY_ENV"}
+# The one OPTIONAL override: a container's own proxy, which the shared file's value yields to when
+# set. Not required, so a deployment that never sets it boots exactly as before. Any other name
+# read is still a red test.
+OPTIONAL_VARIABLES = {"SMTP_PROXY"}
 
 # ⛔ DELIBERATELY NO LIST OF CONSUMER MODULE NAMES HERE. An earlier version enumerated the
 # adopting services by name, which published a private deployment's inventory into a PUBLIC
@@ -330,11 +334,16 @@ def test_the_module_never_reads_the_environment(module: Path) -> None:
     none of its own — except the environment layer, whose ONE read site is the seam every
     variable goes through, and whose names are pinned by the test after this one.
     """
-    offenders = _environment_reads(_module_ast(module))
+    tree = _module_ast(module)
+    offenders = _environment_reads(tree)
     if module.stem == ENVIRONMENT_READER:
-        assert len(offenders) == 1, (
-            f"{module.stem} reads the environment at {offenders}; the contract allows exactly "
-            f"one seam (`_require_env`), so every read goes through the same refusal")
+        # Exactly two seams: `_require_env` (the three required names, refused when unset) and
+        # `_optional_env` (the one optional name, `None` when unset). Each read must sit inside one.
+        seams = {fn.name for fn in tree.body if isinstance(fn, ast.FunctionDef)
+                 and _environment_reads(ast.Module(body=fn.body, type_ignores=[]))}
+        assert seams == {"_require_env", "_optional_env"}, (
+            f"{module.stem} reads the environment at {offenders}, inside {sorted(seams)}; the "
+            f"contract allows exactly two seams, `_require_env` and `_optional_env`")
         return
     assert offenders == [], (
         f"{module.stem} reads the environment: {offenders}. Configuration is INJECTED; a "
@@ -373,9 +382,10 @@ def test_the_environment_layer_reads_exactly_the_three_declared_variables(
     with contextlib.suppress(alerting_env.AlertEnvError):
         alerting_env.validate_boot_from_env(
             AlertSettings(service="svc", config_file=str(tmp_path / "alerting.env")))
-    assert seen == DECLARED_VARIABLES, (
+    assert seen == DECLARED_VARIABLES | OPTIONAL_VARIABLES, (
         f"the environment layer read {sorted(seen)}; the standard declares "
-        f"{sorted(DECLARED_VARIABLES)} and nothing else")
+        f"{sorted(DECLARED_VARIABLES)} and the optional override {sorted(OPTIONAL_VARIABLES)}, "
+        f"and nothing else")
 
 
 @pytest.mark.parametrize("source", [

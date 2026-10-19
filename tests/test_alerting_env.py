@@ -171,7 +171,7 @@ def test_the_loader_runs_with_no_environment_set_at_all(tmp_path: Path) -> None:
     assert settings.config_file == str(config_file_for(tmp_path))
 
 
-def test_the_loader_reads_no_environment_variable_other_than_the_three_documented_ones() -> None:
+def test_the_loader_reads_no_environment_variable_other_than_the_documented_ones() -> None:
     """⭐ ASKED OF THE AST, NOT OF THE TEXT.
 
     A comment explaining a variable must not fail this, and a real `os.environ` read must not be
@@ -201,7 +201,10 @@ def test_the_loader_reads_no_environment_variable_other_than_the_three_documente
     assert environ_reads >= 1, "this test is no longer looking at an environment read at all"
     # The only literal-or-name argument is the parameter of `_require_env`, so no test can be
     # satisfied by a variable spelled inline somewhere else.
-    assert names <= {"<name>"}, f"the module reads environment variables directly: {sorted(names)}"
+    # `SMTP_PROXY` is the one optional override, read by its literal name. Anything else is a
+    # fourth variable a container template would have to know about, which this test exists to stop.
+    assert names <= {"<name>", "SMTP_PROXY"}, (
+        f"the module reads environment variables directly: {sorted(names)}")
 
     # ⭐ AND THE SECOND HALF, WHICH THE FIRST DOES NOT COVER. "Everything comes through one helper"
     # is satisfied by a FOURTH variable read through that same helper — measured: a copy with one

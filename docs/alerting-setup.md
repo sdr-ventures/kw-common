@@ -32,6 +32,9 @@ Every alerting app declares exactly these, and nothing else about alerting:
 | `CONFIG_PATH` | read-write | the app's **own** directory. It writes its boot marker here. |
 | `DEPLOY_ENV` | — | `prod` or `dev`. Case-insensitive; `kw-common` lowercases it. |
 
+One further variable is optional and is not part of the three: `SMTP_PROXY`. Set it to override
+the shared file's `SMTP_PROXY` for this service. Unset, the file decides.
+
 There is **no default for any of them**. A missing variable is an error at boot, on purpose: a
 default would point at the wrong deployment silently, and the symptom of that is an incident that
 produced no page.

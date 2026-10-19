@@ -98,7 +98,8 @@ refused outright — `urllib` cannot send it, and its failure printed the passwo
 where the deployment knowledge lives**, and keeping the two apart is what lets a consumer outside
 this deployment use the first without inheriting the second.
 
-The convention it makes executable: **one shared file, three variables.**
+The convention it makes executable: **one shared file, three variables.** One further variable is
+optional: `SMTP_PROXY`, which a service sets to override the shared file's proxy for itself.
 
 | variable | mode | what it is |
 | --- | --- | --- |

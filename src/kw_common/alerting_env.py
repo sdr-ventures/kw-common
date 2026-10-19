@@ -146,6 +146,8 @@ class AlertEnvError(RuntimeError):
 SHARED_ROOT_VAR = "SHARED_ROOT"
 CONFIG_PATH_VAR = "CONFIG_PATH"
 DEPLOY_ENV_VAR = "DEPLOY_ENV"
+# The one OPTIONAL variable. Not in the standard's required three: unset, the shared file decides.
+SMTP_PROXY_VAR = "SMTP_PROXY"
 
 # The ONE path this module knows, and it is a RELATIVE one — the shared root it hangs off is
 # always supplied. `configs/` and nothing else lives under the shared root.
@@ -502,6 +504,15 @@ def _require_env(name: str) -> str:
     return value.strip()
 
 
+def _optional_env(name: str) -> str | None:
+    """One OPTIONAL environment variable: its value, or `None` when it is not set at all.
+
+    The second and last read site in this module. `None` and `""` mean different things to the
+    caller, so this returns the raw value and never a default.
+    """
+    return os.environ.get(name)
+
+
 def load_alert_settings_from_env(service: str, *, logger_name: str = "") -> AlertSettings:
     """The fleet convention, executable: read `SHARED_ROOT` and `DEPLOY_ENV`, build the settings.
 
@@ -541,7 +552,7 @@ def load_alert_settings_from_env(service: str, *, logger_name: str = "") -> Aler
     # `None` when unset, so the file decides. A set-but-blank variable is `""` and clears the proxy.
     return load_alert_settings(config_file_for(shared_root), deploy_env, service,
                                logger_name=logger_name,
-                               smtp_proxy=os.environ.get("SMTP_PROXY"))
+                               smtp_proxy=_optional_env(SMTP_PROXY_VAR))
 
 
 # --- boot validation -----------------------------------------------------------------------------
