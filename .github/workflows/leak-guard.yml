@@ -5,9 +5,9 @@ name: leak-guard
 #
 #   jobs:
 #     leak-guard:
-#       uses: sdr-ventures/kw-common/.github/workflows/leak-guard.yml@v1.10.0
+#       uses: sdr-ventures/kw-common/.github/workflows/leak-guard.yml@v1.11.0
 #       with:
-#         version: v1.10.0
+#         version: v1.11.0
 #
 # publishes the check `leak-guard / No internal info (leak guard)`. Keep the caller's job id
 # `leak-guard` and the two pins equal: `@<ref>` picks these steps, `version` picks the engine they
