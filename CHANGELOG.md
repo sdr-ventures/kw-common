@@ -11,6 +11,16 @@ exactly the moment the release notes are read most widely.
 
 ## [Unreleased]
 
+### Fixed
+
+* **The pre-push hook no longer narrows the first-push scan on a glob-shaped remote name** (#53).
+  A push of a ref the remote does not have yet is scanned as `<sha> --not --remotes=<remote>`, and
+  `--remotes=` takes a glob. A hand-written remote named `a*`, or a raw URL or path carrying a glob
+  character, matched other remotes' tracking refs and excluded the commits they hold, so a leak
+  already on one remote could reach another unread. The exclusion now narrows only when the name has
+  no `*`, `?`, `[`, `\` or whitespace and `remote.<name>.url` is configured; every other push scans
+  the whole history reachable from the ref, which is wider and never narrower.
+
 ## [1.11.0] - 2026-10-19
 
 **Additions only.** A container can set its own `SMTP_PROXY`. A consumer that sets no such

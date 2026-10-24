@@ -233,6 +233,93 @@ def test_an_unparseable_ref_line_is_a_refusal(tmp_path: Path,
     assert "cannot parse" in capsys.readouterr().out
 
 
+@pytest.mark.parametrize("name,narrows", [
+    ("origin", True),                    # a plain configured name: exclude what it already has
+    ("a@b", True),                       # odd but valid, and configured
+    ("up.stream-2", True),
+    ("or*", False),                      # configured, but a glob: matches other remotes' refs
+    ("or?gin", False),
+    ("or[a-z]gin", False),
+    ("or\\igin", False),                 # a backslash is wildmatch's escape
+    ("two words", False),                # would split into extra revision arguments
+    ("ghost", False),                    # a plain name nothing configures: a URL or path push
+    ("", False),                         # the hook run by hand
+    ("https://git.example.com/org/repo.git", False),
+])
+def test_the_first_push_exclusion_narrows_only_for_a_plain_CONFIGURED_remote_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str, narrows: bool,
+) -> None:
+    """#53. `--remotes=<pattern>` is a glob. Everything not narrowed scans the whole history, which
+    is wider and never narrower. Each configured name below has a URL, so only the shape differs."""
+    repo = _repo(tmp_path)
+    for configured in ("origin", "a@b", "up.stream-2", "or*", "or?gin", "or[a-z]gin", "or\\igin",
+                       "two words"):
+        _git(repo, "config", f"remote.{configured}.url", str(tmp_path / "elsewhere.git"))
+    sha = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    seen: list[str] = []
+    monkeypatch.setattr(guard, "_scan_commits", lambda root, rev_range, compiled:
+                        seen.append(rev_range) or 0)
+    line = f"refs/heads/side {sha} refs/heads/side {'0' * 40}\n"
+    assert guard._pre_push(repo, name, line, []) == 0
+    assert seen == [f"{sha} --not --remotes={name}" if narrows else sha], seen
+
+
+@pytest.mark.timeout(300)
+def test_a_push_to_a_GLOB_named_remote_still_scans_what_the_target_lacks(tmp_path: Path) -> None:
+    """#53 end to end. `origin` already holds a leaking commit (put there past every hook). A
+    hand-written remote named `or*` points at an empty repository: the pattern `or*` matches
+    `origin`'s tracking refs, so a narrowed scan excluded the leak and read nothing, and the leak
+    landed on the target. The control is a plain-named remote, which was always refused."""
+    repo, _ = _with_remote(tmp_path)
+    (repo / "notes.md").write_bytes(f"AGENT={_ADDR}\n".encode())
+    _git(repo, "add", "notes.md")
+    off = ("-c", "core.hooksPath=/nonexistent")
+    _git(repo, *off, "commit", "-qm", "leak")
+    _git(repo, *off, "push", "-q", "origin", "main")
+    for name, target in (("or*", tmp_path / "glob-target.git"), ("plain", tmp_path / "plain.git")):
+        subprocess.run(["git", "init", "-q", "--bare", str(target)], check=True, timeout=120)
+        _git(repo, "config", f"remote.{name}.url", str(target))
+        res = _git(repo, "push", name, "main:refs/heads/side", check=False)
+        assert res.returncode != 0 and "pushing publishes HISTORY" in res.stdout + res.stderr, (
+            name, res.stdout, res.stderr)
+        assert _remote_sha(target, "refs/heads/side") == "", name
+
+
+@pytest.mark.timeout(300)
+def test_a_push_straight_at_a_path_scans_the_whole_history(tmp_path: Path) -> None:
+    """#53: a raw path names no configured remote, so nothing is excluded: the same verdict."""
+    repo, _ = _with_remote(tmp_path)
+    (repo / "notes.md").write_bytes(f"AGENT={_ADDR}\n".encode())
+    _git(repo, "add", "notes.md")
+    off = ("-c", "core.hooksPath=/nonexistent")
+    _git(repo, *off, "commit", "-qm", "leak")
+    _git(repo, *off, "push", "-q", "origin", "main")
+    target = tmp_path / "bare-target.git"
+    subprocess.run(["git", "init", "-q", "--bare", str(target)], check=True, timeout=120)
+    res = _git(repo, "push", str(target), "main:refs/heads/side", check=False)
+    said = res.stdout + res.stderr
+    assert res.returncode != 0 and "pushing publishes HISTORY" in said, said
+    assert _remote_sha(target, "refs/heads/side") == ""
+
+
+@pytest.mark.timeout(300)
+def test_a_push_to_a_configured_odd_name_still_skips_what_that_remote_already_has(
+    tmp_path: Path,
+) -> None:
+    """The fix must not be 'always scan everything': a valid configured name keeps its narrowing,
+    so a new branch whose commits the TARGET already holds is not re-refused for them."""
+    repo, remote = _with_remote(tmp_path)
+    (repo / "notes.md").write_bytes(f"AGENT={_ADDR}\n".encode())
+    _git(repo, "add", "notes.md")
+    off = ("-c", "core.hooksPath=/nonexistent")
+    _git(repo, *off, "commit", "-qm", "leak")
+    _git(repo, *off, "push", "-q", "origin", "main")
+    _git(repo, "remote", "add", "a@b", str(remote))
+    _git(repo, "fetch", "-q", "a@b")
+    res = _git(repo, "push", "a@b", "main:refs/heads/side", check=False)
+    assert res.returncode == 0, res.stdout + res.stderr
+
+
 @pytest.mark.parametrize("argv,says", [
     (["--pre-commit", "--staged"], "do different things"),
     (["--install-hooks", "--check-hooks"], "do different things"),

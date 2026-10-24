@@ -3895,16 +3895,36 @@ def _pre_commit(root: Path, compiled: list[tuple[str, re.Pattern[str]]]) -> int:
     return max(tree, _scan_staged(root, compiled))
 
 
+def _names_a_configured_remote(root: Path, remote: str) -> bool:
+    """Whether `remote` is a plain name git has a configured URL for.
+
+    ⛔ `--remotes=<pattern>` TAKES A GLOB, not a name, and git hands a hook whatever string the push
+    named: a raw URL or path, or a remote hand-written into the config. A pattern with `*`, `?`, `[`
+    or `\\` in it matches other remotes' tracking refs, and everything those refs reach is then
+    excluded from the first-push scan - the commits the target does NOT have are never read.
+    Whitespace would split into extra revision arguments. So the exclusion narrows only for a name
+    with none of those that also has `remote.<name>.url`; for anything else the answer is False and
+    the caller scans the whole history, which is wider and never narrower.
+    """
+    if not remote or any(c.isspace() or c in "*?[\\" for c in remote):
+        return False
+    try:
+        return bool(_git(root, "config", "--get", f"remote.{remote}.url").strip())
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        return False  # unset (exit 1) or unanswerable: the wider scan is the safe reading
+
+
 def _pre_push(root: Path, remote: str, refs: str,
               compiled: list[tuple[str, re.Pattern[str]]]) -> int:
     """Range-scan every ref git says this push publishes (`<local ref> <local sha> <remote ref>
     <remote sha>` per line on stdin).
 
     A deletion (all-zero local sha) publishes nothing. A ref the remote does not have yet is
-    scanned as `<sha> --not --remotes=<remote>` — diffing it against nothing would scan zero
-    commits — and with no plain remote NAME (none, or a URL or path with whitespace in it, which
-    would split into extra revision arguments), its whole history. A line that is not four
-    fields is a refusal: a hook that cannot tell what a push publishes must not let it through.
+    scanned as `<sha> --not --remotes=<remote>` - diffing it against nothing would scan zero
+    commits - and when `remote` is not a configured remote's plain name (none, a URL or path, a
+    glob-shaped or whitespace-bearing string: see `_names_a_configured_remote`), its whole
+    history. A line that is not four fields is a refusal: a hook that cannot tell what a push
+    publishes must not let it through.
 
     ⛔ A REF THAT DOES NOT PEEL TO A COMMIT IS REFUSED. A tag can point at a blob or a tree, and a
     range scan walks commits — so the content it publishes is read by nothing.
@@ -3933,7 +3953,7 @@ def _pre_push(root: Path, remote: str, refs: str,
             continue
         if remote_sha.strip("0"):
             rev_range = f"{remote_sha}..{local_sha}"
-        elif remote and not any(c.isspace() for c in remote):
+        elif _names_a_configured_remote(root, remote):
             rev_range = f"{local_sha} --not --remotes={remote}"
         else:
             rev_range = local_sha
