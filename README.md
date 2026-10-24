@@ -447,7 +447,10 @@ makes git refuse every commit and push until the hooks are installed again. `--c
 each hook's own command line (`-I -m kw_common.leakguard …`) rather than importing the module, so
 an interpreter that imports the guard but cannot run the hook is reported as inactive. A push of a
 tag that points at a blob or a tree is refused, because no scan reads that content.
-[`docs/ADOPTION.md`](docs/ADOPTION.md) is the full migration for each kind of repository.
+A project's own guard (for the names this one has no shape for) can be named with
+`git config kw.privateGuard <path>` and is then run by the pre-push hook over the same range;
+unset it does nothing, and set but unusable it refuses the push. The contract is in
+[`docs/ADOPTION.md`](docs/ADOPTION.md), which is also the full migration for each kind of repository.
 
 ### This repository is PUBLIC
 

@@ -11,6 +11,17 @@ exactly the moment the release notes are read most widely.
 
 ## [Unreleased]
 
+### Added
+
+* **A hook point for a project's own guard** (#51). `git config kw.privateGuard <path>` makes the
+  installed pre-push hook run that Python script over the same range it scans itself, after its own
+  scan, and refuse the push if either refuses. Contract: `<python> <guard> --repo <root>
+  --public-repo --range "<rev-range>"`, exit 0 clean, no standard input, stopped after 15 minutes.
+  **Off unless the key is set**; set but unusable (empty, not a file, unreadable config) refuses
+  every push that publishes something. Read from git config only, never from a tracked file, so a
+  pull request cannot change what runs. Pre-push only; the shims are unchanged, so `--check-hooks`
+  and existing installs need no re-install.
+
 ### Fixed
 
 * **The pre-push hook no longer narrows the first-push scan on a glob-shaped remote name** (#53).

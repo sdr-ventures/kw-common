@@ -368,6 +368,7 @@ def test_adoption_carries_the_corrections_the_seven_adoptions_found() -> None:
     assert "shared checkout" in text and "every linked worktree" in text
     assert "first `v*` tag" in text and "default branch's first push" in text
     assert "separate layer" in text and "not run by the pin's hooks" in text
+    assert "git config kw.privateGuard" in text and "Set but unusable is a refusal" in text
     assert "only when" in text and "never speculatively" in text
     assert "timeout" in text
     # No venv is placed inside the repository any more.

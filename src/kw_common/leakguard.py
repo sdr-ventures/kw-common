@@ -3914,6 +3914,69 @@ def _names_a_configured_remote(root: Path, remote: str) -> bool:
         return False  # unset (exit 1) or unanswerable: the wider scan is the safe reading
 
 
+PRIVATE_GUARD_KEY = "kw.privateGuard"
+_PRIVATE_GUARD_TIMEOUT_S = 900   # a scan of a long history; a hung guard must still end the push
+
+
+def _private_guard(root: Path) -> tuple[Path | None, str]:
+    """(the project-side guard to run, "") - (None, "") when none is configured - or (None, why).
+
+    ⛔ THE ONLY PLACE THE GUARD IS NAMED IS GIT CONFIG, NEVER A TRACKED FILE. This runs a program on
+    every push, so a path a pull request could change (`.leakguard.json`, anything in the tree)
+    would let a contributor run code on the maintainers' machines. `git config` is local to the
+    clone and to the user: the same trust as `core.hooksPath`.
+
+    ⛔ SET BUT UNUSABLE IS A REFUSAL, NOT "OFF". A guard that is silently not running looks exactly
+    like a pass. Only an UNSET key (git exit 1) switches this off; an empty value, a path that is
+    not a file, or a config git cannot read all refuse.
+    """
+    try:
+        probe = subprocess.run(["git", "config", "--get", PRIVATE_GUARD_KEY], cwd=root,
+                               capture_output=True, text=True, timeout=_GIT_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        return None, f"git did not answer for {PRIVATE_GUARD_KEY}"
+    if probe.returncode == 1:
+        return None, ""
+    if probe.returncode != 0:
+        return None, f"git could not read {PRIVATE_GUARD_KEY} (exit {probe.returncode})"
+    value = probe.stdout.strip()
+    if not value:
+        return None, (f"{PRIVATE_GUARD_KEY} is set to an empty value; set it to the guard's "
+                      f"path or `git config --unset {PRIVATE_GUARD_KEY}`")
+    guard = Path(value)
+    if not guard.is_file():
+        return None, f"{PRIVATE_GUARD_KEY} names a path that is not a file"
+    return guard, ""
+
+
+def _run_private_guard(root: Path, guard: Path, rev_range: str) -> int:
+    """Run the project-side guard over one range with this interpreter. 0 only on exit 0.
+
+    Its contract: `<python> <guard> --repo <root> --public-repo --range "<rev-range>"`, exit 0
+    clean and anything else "do not push"; it prints its own findings and must not read stdin
+    (git's ref list is on ours, and is already consumed). `<rev-range>` is ONE argument that may
+    contain spaces. A hang is a refusal after `_PRIVATE_GUARD_TIMEOUT_S`.
+    """
+    try:
+        ran = subprocess.run([sys.executable, str(guard), "--repo", str(root), "--public-repo",
+                              "--range", rev_range], cwd=root, stdin=subprocess.DEVNULL,
+                             timeout=_PRIVATE_GUARD_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        print(f"pre-push REFUSED: the project-side guard did not finish in "
+              f"{_PRIVATE_GUARD_TIMEOUT_S}s")
+        return 1
+    except OSError as exc:
+        print(_ascii(f"pre-push REFUSED: the project-side guard could not be run "
+                     f"({type(exc).__name__})", strict=True))
+        return 1
+    if ran.returncode != 0:
+        # No ref or range in the line: a ref name is operator text, and its own output says which.
+        print("pre-push REFUSED: the project-side guard refused what this push publishes, or "
+              "could not scan it - its own output above says which.")
+        return 1
+    return 0
+
+
 def _pre_push(root: Path, remote: str, refs: str,
               compiled: list[tuple[str, re.Pattern[str]]]) -> int:
     """Range-scan every ref git says this push publishes (`<local ref> <local sha> <remote ref>
@@ -3928,8 +3991,15 @@ def _pre_push(root: Path, remote: str, refs: str,
 
     ⛔ A REF THAT DOES NOT PEEL TO A COMMIT IS REFUSED. A tag can point at a blob or a tree, and a
     range scan walks commits — so the content it publishes is read by nothing.
+
+    ⭐ IF `kw.privateGuard` IS SET IN GIT CONFIG, THE PROJECT-SIDE GUARD RUNS OVER THE SAME RANGE
+    after this engine's scan, and both verdicts print (#51). Off when the key is unset. See
+    `_private_guard` for what counts as set but unusable: that refuses every push that publishes.
     """
     worst = 0
+    private: Path | None = None
+    private_why = ""
+    private_checked = False
     for line in refs.splitlines():
         fields = line.split()
         if not fields:
@@ -3958,6 +4028,14 @@ def _pre_push(root: Path, remote: str, refs: str,
         else:
             rev_range = local_sha
         worst = max(worst, _scan_commits(root, rev_range, compiled))
+        if not private_checked:   # asked once, and only when something is actually published
+            private, private_why = _private_guard(root)
+            private_checked = True
+            if private_why:
+                print(_ascii(f"pre-push REFUSED: {private_why}.", strict=True))
+                worst = 1
+        if private is not None:
+            worst = max(worst, _run_private_guard(root, private, rev_range))
     return worst
 
 
