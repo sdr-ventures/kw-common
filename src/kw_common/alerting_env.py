@@ -86,9 +86,11 @@ import logging
 import os
 import re
 import stat
+from collections.abc import Mapping
 from pathlib import Path
 
 from .alerting import (
+    EMAIL_KEYS,
     OK,
     AlertConfig,
     Alerter,
@@ -366,9 +368,37 @@ def read_config(config_path: str | os.PathLike[str]) -> dict[str, str]:
 
 
 # --- layer one: pure -----------------------------------------------------------------------------
+def _clean_config_values(config_values: Mapping[str, str] | None) -> dict[str, str]:
+    """The caller's values as a plain `{key: stripped value}`, or a refusal naming bad KEYS only.
+
+    ⛔ NEVER A VALUE IN A MESSAGE OR A LOG LINE: the mapping can hold the SMTP password. An
+    unrecognised key is a warning rather than a refusal, because the file may carry keys this
+    module does not read either; it is named because a typo (`SMTP_HOSTT`) is otherwise a setting
+    that silently does nothing.
+    """
+    if config_values is None:
+        return {}
+    if not isinstance(config_values, Mapping):
+        raise _refuse("config_values must be a mapping of file keys to strings, or None")
+    bad = sorted(str(k) for k, v in config_values.items()
+                 if not isinstance(k, str) or not isinstance(v, str))
+    if bad:
+        raise _refuse("config_values needs string keys and string values; not strings: "
+                      + ", ".join(bad))
+    cleaned = {k.strip(): v.strip() for k, v in config_values.items()}
+    if "" in cleaned:
+        raise _refuse("config_values has a blank key")
+    unknown = sorted(k for k in cleaned if k not in EMAIL_KEYS and not k.startswith("NTFY_URL_"))
+    if unknown:
+        log.warning("alerting: config_values has keys nothing reads, so they do nothing: %s",
+                    ", ".join(unknown))
+    return cleaned
+
+
 def load_alert_settings(config_path: str | os.PathLike[str], deploy_env: str,
                         service: str, *, logger_name: str = "",
-                        smtp_proxy: str | None = None) -> AlertSettings:
+                        smtp_proxy: str | None = None,
+                        config_values: Mapping[str, str] | None = None) -> AlertSettings:
     """Build `AlertSettings` from an explicit config file, environment and service name.
 
     Pure in the sense that matters: it reads NO environment variable and has NO default path.
@@ -379,6 +409,16 @@ def load_alert_settings(config_path: str | os.PathLike[str], deploy_env: str,
     is passed in rather than read here, for the same reason as every other value above.
     `load_alert_settings_from_env` supplies it. Set (even to `""`) it replaces the file's value,
     and `""` means a direct connection. `None` leaves the file in charge.
+
+    ⭐ `config_values` ARE THE CALLER'S OWN SETTINGS, MERGED OVER THE FILE'S. A service that keeps
+    its alert settings in a database passes them here (`{"SMTP_HOST": ..., "SMTP_PASSWORD": ...,
+    "NTFY_URL_<SERVICE>": ...}`) instead of writing a file for this package to read. The file is
+    still read and still required; a key present here replaces the file's value for that key,
+    including with `""`, and a key absent leaves the file's. The merge covers the ntfy keys this
+    function reads AND the email keys the send path reads on every notification (they travel in
+    the returned settings), and `validate_boot` judges the merged result. Precedence, highest
+    first: `smtp_proxy` (for `SMTP_PROXY` only), `config_values`, the file. The values are never
+    logged or put in a message; only their key names are.
 
     ⚠️ `config_path` IS THE alerting.env FILE, not the `CONFIG_PATH` variable (which is the app's
     own read-write directory — see the module docstring; `validate_boot` calls that one
@@ -436,12 +476,17 @@ def load_alert_settings(config_path: str | os.PathLike[str], deploy_env: str,
     # looked clean. Two normalisations of one value, disagreeing, is the shape this library keeps
     # having to fix; one is the fix.
     service = service.strip()
-    values = read_config(config_path)
+    caller = _clean_config_values(config_values)
+    values = {**read_config(config_path), **caller}
+    if caller:
+        log.info("alerting: %d value(s) supplied by the caller replace the file's: %s",
+                 len(caller), ", ".join(sorted(caller)))
 
     # ⭐ THE SOURCE IS LOGGED AND THE VALUE NEVER IS. The value is a proxy address, but a malformed
     # one can carry a credential, and a boot line that echoes it would publish that credential.
     file_proxy = values.get("SMTP_PROXY", "").strip()
     proxy_source = ("environment" if smtp_proxy is not None
+                    else "caller" if "SMTP_PROXY" in caller
                     else "file" if file_proxy else "unset")
     effective = smtp_proxy.strip() if smtp_proxy is not None else file_proxy
     log.info("alerting: SMTP_PROXY from %s — email %s", proxy_source,
@@ -477,6 +522,7 @@ def load_alert_settings(config_path: str | os.PathLike[str], deploy_env: str,
         title_prefix=title_prefix,
         logger_name=logger_name,
         smtp_proxy=smtp_proxy,
+        config_values=caller or None,
     )
 
 
@@ -579,8 +625,14 @@ def marker_name(deploy_env: str) -> str:
     return f"{MARKER_NAME}-{normalise_env(deploy_env)}"
 
 
-def _config_digest(config: str | os.PathLike[str]) -> str:
+def _config_digest(config: str | os.PathLike[str],
+                   caller: Mapping[str, str] | None = None) -> str:
     """`sha256:<hex>` for the config file's RAW BYTES, or `""` if it cannot be read.
+
+    ⭐ WITH `caller` VALUES (`AlertSettings.config_values`), THEY ARE HASHED IN, in a canonical
+    order after a separator the file cannot produce, so a change to a database-held setting
+    re-validates exactly as an edit to the file does. With none the digest is the file's alone,
+    byte for byte what it was, so an upgrade does not re-validate a service that passes none.
 
     ⚠️ BYTES, NOT PARSED TEXT, and not decoded text either. A file re-saved in another encoding
     parses to the same keys and is a different file — cp1252 is the encoding this module refuses
@@ -592,7 +644,11 @@ def _config_digest(config: str | os.PathLike[str]) -> str:
     properly by `_check_layout` / `read_config`, which say WHICH thing was wrong.
     """
     try:
-        return "sha256:" + hashlib.sha256(Path(config).read_bytes()).hexdigest()
+        body = Path(config).read_bytes()
+        if caller:
+            # NUL cannot appear in the text file the parser reads, so no file can fake the suffix.
+            body += b"\0config_values\0" + json.dumps(dict(caller), sort_keys=True).encode("utf-8")
+        return "sha256:" + hashlib.sha256(body).hexdigest()
     except (OSError, ValueError):
         # `ValueError` too — an embedded NUL in the path raises it from `open`, and it used to
         # travel straight out of `validate_boot` as a bare exception with no refusal logged: the
@@ -761,7 +817,8 @@ def _report_a_replaced_service(marker: Path, was: str | None, service: str) -> N
         was, service, marker)
 
 
-def _marker_matches(marker: Path, config: Path, service: str) -> bool:
+def _marker_matches(marker: Path, config: Path, service: str,
+                    caller: Mapping[str, str] | None = None) -> bool:
     """Whether this exact config file has already been validated BY THIS SERVICE (#18).
 
     ⭐⭐ THE DIGEST, NOT THE TIMESTAMP (#15). The marker used to be empty and the question used to
@@ -802,7 +859,7 @@ def _marker_matches(marker: Path, config: Path, service: str) -> bool:
     # that is false on every marker an older release wrote. A rename answers here.
     if _recorded_service(recorded) != service:
         return False
-    current = _config_digest(config)
+    current = _config_digest(config, caller)
     # ⚠️ `and` on a non-empty current, because `_config_digest` answers `""` for an unreadable
     # config — and `"" == ""` would make an unreadable config match an unreadable marker. It
     # cannot happen through the branch above, which already required the `sha256:` prefix, and it
@@ -866,7 +923,10 @@ def validate_boot(settings: AlertSettings, deploy_env: str,
             "with load_alert_settings() or load_alert_settings_from_env().")
 
     marker = Path(marker_dir) / marker_name(env)
-    if _marker_matches(marker, config, settings.service):
+    # The caller's own values (`AlertSettings.config_values`) are part of what is validated: they
+    # complete or replace the file's, and a change to them must re-validate like a file edit.
+    caller = dict(getattr(settings, "config_values", None) or {})
+    if _marker_matches(marker, config, settings.service, caller):
         log.info("alerting: %s configuration validated on an earlier boot (%s records the current "
                  "digest of %s); skipping. Any edit to the config file forces a re-check; delete "
                  "the marker to force one without editing it.",
@@ -901,8 +961,8 @@ def validate_boot(settings: AlertSettings, deploy_env: str,
     # it fails in the SAFE direction: a file that changes in between is validated as its new
     # contents and marked as its old ones, so the next boot re-validates. Stated rather than
     # called atomic, because it is not.
-    digest = _config_digest(config)
-    values = read_config(config)          # raises AlertEnvError, having named the reason
+    digest = _config_digest(config, caller)
+    values = {**read_config(config), **caller}   # read_config raises AlertEnvError, naming why
     _check_required(values, env, config)
     _check_usable(settings, config)
 

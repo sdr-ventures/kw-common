@@ -91,8 +91,30 @@ A push of a tag that points at a blob or a tree is refused: no scan reads that c
 The pin's hooks and CI job know **shapes** (private address ranges, `.lan`, pool paths…). They
 cannot know a literal only the owner knows: a particular hostname, container name or account.
 Where a project keeps such a check of its own (outside this repository, since the list is itself
-private), it is not run by the pin's hooks or by the reusable workflow. Run it yourself before every
-push, in addition to the pin; passing one says nothing about the other.
+private), it is not run by the reusable workflow, and it is not run by the pin's hooks unless you
+name it (below). Passing one says nothing about the other.
+
+**Naming it, so `pre-push` runs it too.** Set it once per clone, in git config (never in a file the
+repository tracks: the hook runs it, and a pull request must not be able to change what runs):
+
+```
+git config kw.privateGuard "<absolute path to the project-side guard>"
+```
+
+The pre-push hook then runs it over the same range it scans itself, after its own scan, and a
+push is refused if either refuses; both verdicts print. The contract it must meet:
+
+* a Python script, run with the hook's own interpreter: `<python> <guard> --repo <root>
+  --public-repo --range "<rev-range>"`. `<rev-range>` is **one** argument and may contain spaces
+  (`<sha> --not --remotes=<name>`), so a guard must take a multi-token range;
+* exit 0 means clean, anything else means do not push; it prints its own findings;
+* it gets no standard input, and is stopped after 15 minutes (a refusal).
+
+Unset, nothing changes: no extra guard runs. **Set but unusable is a refusal, not "off"** (an
+empty value, a path that is not a file, a config git cannot read): a guard that is silently not
+running looks exactly like a pass. A push that publishes nothing (only deletions) still goes
+through. It runs for `pre-push` only; the `pre-commit` hook is unchanged. A project that wants the
+tree checked too runs its guard by hand.
 
 ### Allowances
 

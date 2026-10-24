@@ -11,6 +11,39 @@ exactly the moment the release notes are read most widely.
 
 ## [Unreleased]
 
+### Added
+
+* **`config_values`: a service passes its own alert settings, merged over the shared file's.**
+  `load_alert_settings(..., config_values={...})` takes file keys (`SMTP_HOST`, `SMTP_PASSWORD`,
+  `NTFY_URL_<SERVICE>`, ...) and merges them over the file's values, so a service that keeps its
+  settings in a database no longer writes a temporary file for the library to read. A key present
+  replaces the file's (also with `""`), a key absent leaves it. The email keys travel in the new
+  `AlertSettings.config_values` field (`Mapping[str, str] | None`, default `None`, never shown by
+  `repr`) and are applied on every send over the re-read file. `SMTP_PROXY` precedence: the
+  environment variable, then `config_values`, then the file; the boot line adds `caller` to the
+  sources it names. `validate_boot` judges the merged values and the marker digest covers them;
+  with none passed the digest is unchanged, so nothing re-validates on upgrade. Additive: a
+  defaulted field and a keyword-only parameter, no exported name changed. MINOR.
+
+* **A hook point for a project's own guard** (#51). `git config kw.privateGuard <path>` makes the
+  installed pre-push hook run that Python script over the same range it scans itself, after its own
+  scan, and refuse the push if either refuses. Contract: `<python> <guard> --repo <root>
+  --public-repo --range "<rev-range>"`, exit 0 clean, no standard input, stopped after 15 minutes.
+  **Off unless the key is set**; set but unusable (empty, not a file, unreadable config) refuses
+  every push that publishes something. Read from git config only, never from a tracked file, so a
+  pull request cannot change what runs. Pre-push only; the shims are unchanged, so `--check-hooks`
+  and existing installs need no re-install.
+
+### Fixed
+
+* **The pre-push hook no longer narrows the first-push scan on a glob-shaped remote name** (#53).
+  A push of a ref the remote does not have yet is scanned as `<sha> --not --remotes=<remote>`, and
+  `--remotes=` takes a glob. A hand-written remote named `a*`, or a raw URL or path carrying a glob
+  character, matched other remotes' tracking refs and excluded the commits they hold, so a leak
+  already on one remote could reach another unread. The exclusion now narrows only when the name has
+  no `*`, `?`, `[`, `\` or whitespace and `remote.<name>.url` is configured; every other push scans
+  the whole history reachable from the ref, which is wider and never narrower.
+
 ## [1.11.0] - 2026-10-19
 
 **Additions only.** A container can set its own `SMTP_PROXY`. A consumer that sets no such

@@ -217,6 +217,43 @@ vfat, most CIFS mounts — the process log says so at boot and the marker is kep
 they are not in the shared file and the loader has nothing to say about them — hence the
 `replace`.
 
+### Settings the app holds itself (`config_values`)
+
+A service that keeps its alert settings in its own database passes them to the loader instead of
+writing a temporary file for the library to read:
+
+```python
+from kw_common.alerting_env import config_file_for, load_alert_settings
+
+# The values below stand in for what the service read from its own database.
+settings = load_alert_settings(
+    config_file_for("/shared"), "prod", "my-service",
+    config_values={"SMTP_HOST": "smtp.example.com", "SMTP_PASSWORD": "from-your-database"},
+)
+```
+
+The shared file is still read and still required; the mapping is merged **over** it, key by key:
+
+* a key present replaces the file's value for that service, including with `""`; a key absent
+  leaves the file's value. Pass only the keys you actually hold;
+* the keys are the file's own names: the email keys (`EMAIL_TO`, `EMAIL_FROM`, `SMTP_HOST`,
+  `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_PROXY`) and the ntfy keys the loader resolves
+  (`NTFY_URL_DEV`, `NTFY_URL_PROD`, `NTFY_URL_<SERVICE>`, with the same title-prefix rule as a
+  file). A name nothing reads is logged as a warning, never silently ignored;
+* the email values travel inside the returned settings and are applied on every send, on top of
+  the freshly re-read file, so rotating a key **in the file** still takes effect without a
+  restart for every key you did not pass. To change a value you did pass, build new settings and
+  `configure()` again;
+* precedence for `SMTP_PROXY`, highest first: the `SMTP_PROXY` environment variable, then
+  `config_values`, then the file;
+* `validate_boot` judges the **merged** values, so a required key held only in your database
+  passes, and the marker's digest covers them too: changing a passed value re-validates, exactly
+  as editing the file does. A service that passes none has the same digest as before.
+
+The values are never written to a log line, a refusal message, or `repr(settings)`; the boot log
+names the keys (`N value(s) supplied by the caller replace the file's: SMTP_HOST, ...`) and, for
+the proxy, where it came from (`environment`, `caller`, `file` or `unset`).
+
 **Let `AlertEnvError` stop the process.** An app that cannot alert must not come up pretending it
 can, and it must not try to report the problem through the channel that is broken. Every refusal is
 logged before it is raised, so the reason is in the process log even if you catch it.

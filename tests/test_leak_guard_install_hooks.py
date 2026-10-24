@@ -10,6 +10,7 @@ Python entry points directly would pass on a hook git never invokes.
 
 from __future__ import annotations
 
+import ast
 import re
 import subprocess
 import sys
@@ -25,6 +26,17 @@ _HOST = "host-a." + "lan"
 _PINNED = ("-c", "user.name=guard test", "-c", "user.email=t@example.com",
            "-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false",
            "-c", "core.autocrlf=false", "-c", "init.defaultBranch=main")
+
+
+@pytest.fixture(autouse=True)
+def _no_ambient_git_config(tmp_path_factory: pytest.TempPathFactory,
+                           monkeypatch: pytest.MonkeyPatch) -> None:
+    """The hook consults git config for `kw.privateGuard` (#51), so a developer's own global or
+    system value must not reach a test that runs the real hook."""
+    empty = tmp_path_factory.mktemp("gitconfig") / "gitconfig"
+    empty.write_bytes(b"")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(empty))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
 
 
 def _git(repo: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -231,6 +243,216 @@ def test_an_unparseable_ref_line_is_a_refusal(tmp_path: Path,
                                               capsys: pytest.CaptureFixture[str]) -> None:
     assert guard._pre_push(tmp_path, "origin", "only three fields\n", []) == 1
     assert "cannot parse" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("name,narrows", [
+    ("origin", True),                    # a plain configured name: exclude what it already has
+    ("a@b", True),                       # odd but valid, and configured
+    ("up.stream-2", True),
+    ("or*", False),                      # configured, but a glob: matches other remotes' refs
+    ("or?gin", False),
+    ("or[a-z]gin", False),
+    ("or\\igin", False),                 # a backslash is wildmatch's escape
+    ("two words", False),                # would split into extra revision arguments
+    ("ghost", False),                    # a plain name nothing configures: a URL or path push
+    ("", False),                         # the hook run by hand
+    ("https://git.example.com/org/repo.git", False),
+])
+def test_the_first_push_exclusion_narrows_only_for_a_plain_CONFIGURED_remote_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str, narrows: bool,
+) -> None:
+    """#53. `--remotes=<pattern>` is a glob. Everything not narrowed scans the whole history, which
+    is wider and never narrower. Each configured name below has a URL, so only the shape differs."""
+    repo = _repo(tmp_path)
+    for configured in ("origin", "a@b", "up.stream-2", "or*", "or?gin", "or[a-z]gin", "or\\igin",
+                       "two words"):
+        _git(repo, "config", f"remote.{configured}.url", str(tmp_path / "elsewhere.git"))
+    sha = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    seen: list[str] = []
+    monkeypatch.setattr(guard, "_scan_commits", lambda root, rev_range, compiled:
+                        seen.append(rev_range) or 0)
+    line = f"refs/heads/side {sha} refs/heads/side {'0' * 40}\n"
+    assert guard._pre_push(repo, name, line, []) == 0
+    assert seen == [f"{sha} --not --remotes={name}" if narrows else sha], seen
+
+
+@pytest.mark.timeout(300)
+def test_a_push_to_a_GLOB_named_remote_still_scans_what_the_target_lacks(tmp_path: Path) -> None:
+    """#53 end to end. `origin` already holds a leaking commit (put there past every hook). A
+    hand-written remote named `or*` points at an empty repository: the pattern `or*` matches
+    `origin`'s tracking refs, so a narrowed scan excluded the leak and read nothing, and the leak
+    landed on the target. The control is a plain-named remote, which was always refused."""
+    repo, _ = _with_remote(tmp_path)
+    (repo / "notes.md").write_bytes(f"AGENT={_ADDR}\n".encode())
+    _git(repo, "add", "notes.md")
+    off = ("-c", "core.hooksPath=/nonexistent")
+    _git(repo, *off, "commit", "-qm", "leak")
+    _git(repo, *off, "push", "-q", "origin", "main")
+    for name, target in (("or*", tmp_path / "glob-target.git"), ("plain", tmp_path / "plain.git")):
+        subprocess.run(["git", "init", "-q", "--bare", str(target)], check=True, timeout=120)
+        _git(repo, "config", f"remote.{name}.url", str(target))
+        res = _git(repo, "push", name, "main:refs/heads/side", check=False)
+        assert res.returncode != 0 and "pushing publishes HISTORY" in res.stdout + res.stderr, (
+            name, res.stdout, res.stderr)
+        assert _remote_sha(target, "refs/heads/side") == "", name
+
+
+@pytest.mark.timeout(300)
+def test_a_push_straight_at_a_path_scans_the_whole_history(tmp_path: Path) -> None:
+    """#53: a raw path names no configured remote, so nothing is excluded: the same verdict."""
+    repo, _ = _with_remote(tmp_path)
+    (repo / "notes.md").write_bytes(f"AGENT={_ADDR}\n".encode())
+    _git(repo, "add", "notes.md")
+    off = ("-c", "core.hooksPath=/nonexistent")
+    _git(repo, *off, "commit", "-qm", "leak")
+    _git(repo, *off, "push", "-q", "origin", "main")
+    target = tmp_path / "bare-target.git"
+    subprocess.run(["git", "init", "-q", "--bare", str(target)], check=True, timeout=120)
+    res = _git(repo, "push", str(target), "main:refs/heads/side", check=False)
+    said = res.stdout + res.stderr
+    assert res.returncode != 0 and "pushing publishes HISTORY" in said, said
+    assert _remote_sha(target, "refs/heads/side") == ""
+
+
+@pytest.mark.timeout(300)
+def test_a_push_to_a_configured_odd_name_still_skips_what_that_remote_already_has(
+    tmp_path: Path,
+) -> None:
+    """The fix must not be 'always scan everything': a valid configured name keeps its narrowing,
+    so a new branch whose commits the TARGET already holds is not re-refused for them."""
+    repo, remote = _with_remote(tmp_path)
+    (repo / "notes.md").write_bytes(f"AGENT={_ADDR}\n".encode())
+    _git(repo, "add", "notes.md")
+    off = ("-c", "core.hooksPath=/nonexistent")
+    _git(repo, *off, "commit", "-qm", "leak")
+    _git(repo, *off, "push", "-q", "origin", "main")
+    _git(repo, "remote", "add", "a@b", str(remote))
+    _git(repo, "fetch", "-q", "a@b")
+    res = _git(repo, "push", "a@b", "main:refs/heads/side", check=False)
+    assert res.returncode == 0, res.stdout + res.stderr
+
+
+# ----------------------------------------------------------- the project-side guard (#51)
+
+
+def _fake_guard(tmp_path: Path, code: int) -> Path:
+    """A project-side guard that records its argv and stdin next to itself, prints, and exits."""
+    script = tmp_path / "project_guard.py"
+    script.write_text(
+        "import pathlib, sys\n"
+        "log = pathlib.Path(__file__).with_suffix('.log')\n"
+        "with log.open('a', encoding='utf-8') as fh:\n"
+        "    fh.write(repr(sys.argv[1:]) + '|' + repr(sys.stdin.read()) + '\\n')\n"
+        "print('project guard output')\n"
+        f"sys.exit({code})\n", encoding="utf-8")
+    return script
+
+
+def _guard_calls(script: Path) -> list[tuple[list[str], str]]:
+    log = script.with_suffix(".log")
+    if not log.exists():
+        return []
+    rows = [line.rsplit("|", 1) for line in log.read_text(encoding="utf-8").splitlines()]
+    return [(ast.literal_eval(argv), ast.literal_eval(stdin)) for argv, stdin in rows]
+
+
+def _commit(repo: Path, name: str, text: bytes = b"clean\n") -> None:
+    (repo / name).write_bytes(text)
+    _git(repo, "add", name)
+    _git(repo, "commit", "-qm", f"add {name}")
+
+
+@pytest.mark.timeout(300)
+def test_with_no_project_guard_configured_nothing_extra_runs(tmp_path: Path) -> None:
+    repo, _ = _with_remote(tmp_path)
+    script = _fake_guard(tmp_path, 1)   # exists, but nothing names it
+    _commit(repo, "a.md")
+    res = _git(repo, "push", "origin", "main", check=False)
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert _guard_calls(script) == []
+
+
+@pytest.mark.timeout(300)
+def test_a_configured_project_guard_runs_on_the_range_with_its_documented_contract(
+    tmp_path: Path,
+) -> None:
+    repo, remote = _with_remote(tmp_path)
+    script = _fake_guard(tmp_path, 0)
+    _git(repo, "config", "kw.privateGuard", str(script))
+    _commit(repo, "a.md")
+    old = _git(repo, "rev-parse", "origin/main").stdout.strip()
+    new = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    assert _git(repo, "push", "origin", "main", check=False).returncode == 0
+    _git(repo, "push", "-q", "origin", "main:refs/heads/side")
+    (first, stdin1), (second, stdin2) = _guard_calls(script)
+    root = Path(_git(repo, "rev-parse", "--show-toplevel").stdout.strip())
+    assert first[:3] == ["--repo", first[1], "--public-repo"] and Path(first[1]) == root, first
+    assert first[3:] == ["--range", f"{old}..{new}"], first
+    # A ref the remote lacks: ONE argument carrying spaces, exactly as the contract says.
+    assert second[3:] == ["--range", f"{new} --not --remotes=origin"], second
+    assert stdin1 == stdin2 == "", "the guard must not be able to read git's ref list"
+    assert _remote_sha(remote, "refs/heads/side") == new
+
+
+@pytest.mark.timeout(300)
+def test_a_project_guard_that_refuses_stops_a_push_the_engine_would_allow(tmp_path: Path) -> None:
+    repo, remote = _with_remote(tmp_path)
+    script = _fake_guard(tmp_path, 1)
+    _git(repo, "config", "kw.privateGuard", str(script))
+    before = _remote_sha(remote, "refs/heads/main")
+    _commit(repo, "ok.md")
+    res = _git(repo, "push", "origin", "main", check=False)
+    said = res.stdout + res.stderr
+    assert res.returncode != 0 and "project guard output" in said, said
+    assert "the project-side guard refused" in said, said
+    assert _remote_sha(remote, "refs/heads/main") == before
+
+
+@pytest.mark.timeout(300)
+def test_a_leak_and_a_refusing_project_guard_each_report(tmp_path: Path) -> None:
+    repo, remote = _with_remote(tmp_path)
+    script = _fake_guard(tmp_path, 1)
+    _git(repo, "config", "kw.privateGuard", str(script))
+    before = _remote_sha(remote, "refs/heads/main")
+    (repo / "leak.md").write_bytes(f"AGENT={_ADDR}\n".encode())
+    _git(repo, "add", "leak.md")
+    _git(repo, "-c", "core.hooksPath=/nonexistent", "commit", "-qm", "leak")  # past pre-commit
+    res = _git(repo, "push", "origin", "main", check=False)
+    said = res.stdout + res.stderr
+    assert res.returncode != 0, said
+    assert "pushing publishes HISTORY" in said and "the project-side guard refused" in said, said
+    assert len(_guard_calls(script)) == 1, "the guard still ran after the engine refused"
+    assert _remote_sha(remote, "refs/heads/main") == before
+
+
+@pytest.mark.timeout(300)
+@pytest.mark.parametrize("value", ["", "NOT-A-FILE"])
+def test_a_project_guard_that_is_set_but_unusable_refuses_every_publishing_push(
+    tmp_path: Path, value: str,
+) -> None:
+    """Fail closed: a guard that is silently not running looks exactly like a pass."""
+    repo, remote = _with_remote(tmp_path)
+    _git(repo, "config", "kw.privateGuard", str(tmp_path / value) if value else "")
+    before = _remote_sha(remote, "refs/heads/main")
+    _commit(repo, "a.md")
+    res = _git(repo, "push", "origin", "main", check=False)
+    said = res.stdout + res.stderr
+    assert res.returncode != 0 and "kw.privateGuard" in said, said
+    assert _remote_sha(remote, "refs/heads/main") == before
+    # ...and a push that publishes NOTHING is still let through, so the operator can clean up.
+    _git(repo, "push", "-q", "origin", "HEAD:refs/heads/gone", "--no-verify")
+    assert _git(repo, "push", "origin", "--delete", "gone", check=False).returncode == 0
+
+
+@pytest.mark.timeout(300)
+def test_a_project_guard_that_never_finishes_is_a_refusal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    script = tmp_path / "hang.py"
+    script.write_text("import time\ntime.sleep(60)\n", encoding="utf-8")
+    monkeypatch.setattr(guard, "_PRIVATE_GUARD_TIMEOUT_S", 1)
+    assert guard._run_private_guard(tmp_path, script, "HEAD") == 1
+    assert "did not finish" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize("argv,says", [
