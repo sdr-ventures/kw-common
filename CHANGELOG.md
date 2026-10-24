@@ -11,6 +11,8 @@ exactly the moment the release notes are read most widely.
 
 ## [Unreleased]
 
+## [1.12.0] - 2026-10-24
+
 ### Added
 
 * **`config_values`: a service passes its own alert settings, merged over the shared file's.**
