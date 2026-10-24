@@ -215,7 +215,7 @@ import time
 import urllib.request
 from collections import deque
 from collections.abc import Callable, Iterator, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from email.message import EmailMessage
 from email.utils import getaddresses
@@ -348,6 +348,24 @@ def _smtp_proxy_override(settings: object) -> str | None:
     except Exception:  # noqa: BLE001 — the override is optional; the file is the default
         return None
     return value.strip() if isinstance(value, str) else None
+
+
+def _config_values_override(settings: object) -> dict[str, str]:
+    """The `EMAIL_KEYS` entries of `settings.config_values`, stripped. Never raises.
+
+    Same contract as `_smtp_proxy_override`: an `Alerter` takes any settings-shaped object, so a
+    missing attribute, a property that raises or a value that is not a mapping of strings means
+    "nothing supplied" and the file decides. Keys outside `EMAIL_KEYS` (the ntfy keys the loader
+    reads) are not this module's to apply.
+    """
+    try:
+        values = getattr(settings, "config_values", None)
+        if not isinstance(values, Mapping):
+            return {}
+        return {key: value.strip() for key, value in values.items()
+                if key in EMAIL_KEYS and isinstance(value, str)}
+    except Exception:  # noqa: BLE001 — the override is optional; the file is the default
+        return {}
 
 
 # ⭐ THE `SMTP_PORT` COMPLAINT IS MADE ONCE PER DISTINCT VALUE, PER CONFIG (consumer#46).
@@ -745,6 +763,13 @@ class AlertSettings:
                    it for this service; `""` means a direct connection even when the file names a
                    proxy. See the field's comment below the docstring.
 
+    `config_values` `None` (the default) means the file alone. A mapping of file keys to strings
+                   (`SMTP_HOST`, `SMTP_PASSWORD`, ...) is merged OVER the file on every load, so a
+                   service that keeps its settings in a database passes them here instead of
+                   writing a file for this module to re-read. A key present replaces the file's,
+                   including with `""`; a key absent leaves the file's. `smtp_proxy` still wins
+                   over `config_values["SMTP_PROXY"]`. Never shown by `repr`.
+
     The remaining fields are the sizing knobs. They are constructor arguments rather than module
     constants a consumer is expected to edit after install, because an edited install is a fork.
     """
@@ -786,6 +811,11 @@ class AlertSettings:
     # environment variable, so one container can tunnel mail while the shared file serves hosts
     # that connect directly.
     smtp_proxy: str | None = None
+    # ⭐ APPENDED and defaulted to `None`, for the reason of the two fields above. ⛔ `repr=False`:
+    # this can hold `SMTP_PASSWORD`, and a generated repr would print it into any log line or
+    # traceback that formats the settings. `hash=False` keeps the settings hashable, as they were
+    # before this field existed (a dict is not).
+    config_values: Mapping[str, str] | None = field(default=None, repr=False, hash=False)
 
     def __post_init__(self) -> None:
         # Raising here is deliberate and does NOT weaken the "notify() never raises" invariant:
@@ -798,6 +828,18 @@ class AlertSettings:
         object.__setattr__(self, "service", self.service.strip())
         if self.smtp_proxy is not None and not isinstance(self.smtp_proxy, str):
             raise ValueError("AlertSettings.smtp_proxy must be a string, or None for the file's")
+        if self.config_values is not None:
+            # A private copy: the caller may keep mutating the mapping it passed. Refused by KEY
+            # NAME only - the values include a password.
+            if not isinstance(self.config_values, Mapping):
+                raise ValueError("AlertSettings.config_values must be a mapping of file keys to "
+                                 "strings, or None for the file alone")
+            bad = sorted(str(k) for k, v in self.config_values.items()
+                         if not isinstance(k, str) or not isinstance(v, str))
+            if bad:
+                raise ValueError("AlertSettings.config_values needs string keys and string "
+                                 f"values; not strings: {', '.join(bad)}")
+            object.__setattr__(self, "config_values", dict(self.config_values))
 
         # ⭐⭐ A BLANK PATH IS REFUSED, NOT TREATED AS "OFF". This is the single likeliest way to
         # misconfigure this library, and it used to fail SILENTLY in the worst direction.
@@ -1265,6 +1307,9 @@ class AlertConfig:
                       exc_info=True)
                 parsed = {}
         email = {k: parsed.get(k, "").strip() for k in EMAIL_KEYS}
+        # The caller's values replace the file's, key by key, on every load. Before the proxy
+        # override so that one still wins over `config_values["SMTP_PROXY"]`.
+        email.update(_config_values_override(settings))
         # Applied on every load, like the file: the override is part of the settings, and the
         # settings are what every send is built from. It goes in before `setting_faults` and the
         # send path read `email`, so both judge the value that will be used.

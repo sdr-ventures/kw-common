@@ -99,7 +99,9 @@ where the deployment knowledge lives**, and keeping the two apart is what lets a
 this deployment use the first without inheriting the second.
 
 The convention it makes executable: **one shared file, three variables.** One further variable is
-optional: `SMTP_PROXY`, which a service sets to override the shared file's proxy for itself.
+optional: `SMTP_PROXY`, which a service sets to override the shared file's proxy for itself. A
+service that keeps its own settings in a database passes them to `load_alert_settings(...,
+config_values={...})`, which merges them over the file's (see `docs/alerting-setup.md`).
 
 | variable | mode | what it is |
 | --- | --- | --- |
