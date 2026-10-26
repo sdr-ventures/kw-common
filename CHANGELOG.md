@@ -11,6 +11,22 @@ exactly the moment the release notes are read most widely.
 
 ## [Unreleased]
 
+## [1.13.0] - 2026-10-25
+
+### Added
+
+* **`pre-push` refuses a ref whose published name matches a rule** (#52, D104). The name the remote
+  receives is checked against the same content rules the commit scan uses, and a match refuses the
+  push naming the ref and the rule's label, never the matched text. A deletion publishes no name
+  and is not checked. No pattern was added. A `<host>.lan-<suffix>` name is not matched, because no
+  existing rule covers a `.lan` followed by a hyphen. Additive: a consumer that does not bump its
+  pin sees no change. MINOR.
+
+* **`scan_all_history` input to the reusable leak-guard workflow** (#52, D103). A boolean, default
+  `false`. Set `with: scan_all_history: true` and a tag push scans every commit the tag reaches,
+  not only those since the previous `v[0-9]*` tag. It needs no permission beyond `contents: read`.
+  Unset, the tag scan is unchanged. MINOR.
+
 ## [1.12.0] - 2026-10-24
 
 ### Added

@@ -139,7 +139,8 @@ def _scan_step(repo: Path, **env: str) -> tuple[int, str]:
     """Run 'Scan what this event publishes' in `repo`, with `kw-leak-guard` on PATH."""
     script = step_script(REUSABLE, "Scan what this event publishes")
     full = {**os.environ, "EVENT": "", "REF": "", "PR_BASE": "", "PR_HEAD": "",
-            "PUSH_BEFORE": "", "HEAD_SHA": "", "DEFAULT_BRANCH": "", **env,
+            "PUSH_BEFORE": "", "HEAD_SHA": "", "DEFAULT_BRANCH": "", "WIDEN_TAG_SCAN": "false",
+            **env,
             "PATH": os.path.dirname(sys.executable) + os.pathsep + os.environ.get("PATH", "")}
     assert BASH is not None
     proc = subprocess.run([BASH, "-c", script], cwd=repo, env=full, capture_output=True,
@@ -174,6 +175,28 @@ def test_a_TAG_scans_from_the_previous_release_tag_and_reads_the_tag_object(
     code, out = _scan_step(repo, EVENT="push", REF="refs/tags/v1.2.1", HEAD_SHA=third)
     assert code == 0 and "range: v1.1.0^{commit}..refs/tags/v1.2.1" in out, out
     assert first  # the base commit exists; the first tag is what the first case scanned from
+
+
+@needs_bash
+@pytest.mark.timeout(300)
+def test_scan_all_history_widens_a_TAG_to_every_commit_it_reaches(tmp_path: Path) -> None:
+    """The leak sits before the previous release tag, so only the widened scan reads it."""
+    repo = tmp_path / "widen"
+    repo.mkdir()
+    _g(repo, "init", "-q")
+    _commit(repo, "a.md", f"AGENT={_ADDR}\n")
+    _g(repo, "tag", "-a", "v1.0.0", "-m", "first")   # scanned: first tag, all history
+    prev = _commit(repo, "b.md", "clean\n")
+    _g(repo, "tag", "-a", "v1.0.1", "-m", "second")
+    head = _commit(repo, "c.md", "clean\n")
+    _g(repo, "tag", "-a", "v1.1.0", "-m", "third")
+
+    code, out = _scan_step(repo, EVENT="push", REF="refs/tags/v1.1.0", HEAD_SHA=head)
+    assert code == 0 and "range: v1.0.1^{commit}..refs/tags/v1.1.0" in out, out
+    code, out = _scan_step(repo, EVENT="push", REF="refs/tags/v1.1.0", HEAD_SHA=head,
+                           WIDEN_TAG_SCAN="true")
+    assert code == 1 and "range: refs/tags/v1.1.0\n" in out and "a.md:1: private IPv4" in out, out
+    assert prev  # the earlier tag's commit is the one the unwidened scan starts after
 
 
 @needs_bash

@@ -5,9 +5,10 @@ name: leak-guard
 #
 #   jobs:
 #     leak-guard:
-#       uses: sdr-ventures/kw-common/.github/workflows/leak-guard.yml@v1.12.0
+#       uses: sdr-ventures/kw-common/.github/workflows/leak-guard.yml@v1.13.0
 #       with:
-#         version: v1.12.0
+#         version: v1.13.0
+#         # scan_all_history: true   # optional: a tag scans every commit it reaches
 #
 # publishes the check `leak-guard / No internal info (leak guard)`. Keep the caller's job id
 # `leak-guard` and the two pins equal: `@<ref>` picks these steps, `version` picks the engine they
@@ -25,6 +26,13 @@ on:
           commit SHA. Never a branch — a pin that moves is not a pin.
         required: true
         type: string
+      scan_all_history:
+        description: >-
+          A TAG push scans every commit the tag reaches, not only those since the previous
+          `v[0-9]*` tag. Other events are unchanged. Needs no permission beyond `contents: read`.
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -89,6 +97,7 @@ jobs:
           PUSH_BEFORE: ${{ github.event.before }}
           HEAD_SHA: ${{ github.sha }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          WIDEN_TAG_SCAN: ${{ inputs.scan_all_history }}
         run: |
           set -eu
           z40=0000000000000000000000000000000000000000
@@ -108,7 +117,10 @@ jobs:
               # the range names, so a bare `<base tag>..` would re-scan the previous release's
               # annotation, which this push does not publish.
               range="$REF"
-              if [ -n "$base" ] && [ "$(git rev-list --count "${base}..${REF}")" -gt 0 ]; then
+              if [ "$WIDEN_TAG_SCAN" = "true" ]; then
+                # The caller asked for the widest tag scan: every commit this tag reaches.
+                echo "::notice::scan_all_history is set: scanning ALL history reachable from ${REF}"
+              elif [ -n "$base" ] && [ "$(git rev-list --count "${base}..${REF}")" -gt 0 ]; then
                 range="${base}^{commit}..${REF}"
               else
                 # ⭐ WIDER, NEVER EMPTY, AND SAID OUT LOUD. With no earlier `v[0-9]*` tag (the first
