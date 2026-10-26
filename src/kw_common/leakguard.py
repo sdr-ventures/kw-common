@@ -2547,11 +2547,10 @@ def refs_being_published(root: Path, rev_range: str,
                          unreadable: list[str] | None = None) -> list[tuple[str, str, str]]:
     """[(kind, sha, text)] for every TAG OBJECT the range NAMES.
 
-    ⛔⛔ REF **NAMES** ARE NOT SCANNED HERE, AND THAT IS A DELIBERATE REVERT RATHER THAN AN
-    OVERSIGHT — see issue #49. A version of this also matched every `refs/`-bearing token as a
-    NAME, and a `--ref-name` argument carried the name a push publishes (which is `<remote_ref>`,
-    not `<local_ref>`, because a refspec may rename). It was withdrawn after producing a production
-    bypass in three consecutive verification rounds:
+    ⛔⛔ REF **NAMES** ARE NOT SCANNED HERE. `_pre_push` checks the name the remote receives
+    (`<remote_ref>`, because a refspec may rename) against the content set, and only at push time.
+    Matching every `refs/`-bearing token in a range as a NAME was withdrawn after it produced a
+    bypass in three consecutive verification rounds (issue #49):
 
       1. scoping tags by commit-reachability missed the ordinary tag push entirely;
       2. reading only the LOCAL ref let `git push origin clean:refs/tags/<host>.lan` publish a
@@ -2560,11 +2559,8 @@ def refs_being_published(root: Path, rev_range: str,
          UUID-named ref and a `.local`-named ref all still published clean, while the LOCAL name
          produced a false red whose printed remedy was inert against it.
 
-    Ref-name scanning is not in this package's acceptance criteria — those name a leak in a commit
-    MESSAGE and in an annotated tag MESSAGE — and an addition that cannot converge inside a package
-    does not get to hold it. What survives is what the criteria actually ask for, and it is
-    unaffected by the revert: an annotated tag's OBJECT, which carries its name, its tagger and its
-    message together.
+    What this reads is an annotated tag's OBJECT, which carries its name, its tagger and its
+    message together. A LIGHTWEIGHT tag has no object, so its name is read only by `_pre_push`.
 
     ⚠️ THE GAP THAT REMAINS, stated rather than left to be discovered: a LIGHTWEIGHT tag has no
     object, so a leak that exists only as a ref name — `refs/tags/<host>.lan` — is NOT caught by
@@ -4008,9 +4004,18 @@ def _pre_push(root: Path, remote: str, refs: str,
             print(_ascii(f"pre-push REFUSED: cannot parse the ref line {line!r}", strict=True))
             worst = 1
             continue
-        local_ref, local_sha, _, remote_sha = fields
+        local_ref, local_sha, remote_ref, remote_sha = fields
         if not local_sha.strip("0"):
             continue
+        # ⭐ THE NAME THE REMOTE RECEIVES, not the local one: a refspec may rename, so a clean local
+        # name can publish a leaking one. The content set is the one the commit scan already uses.
+        # Its refusal names the ref and the rule's label, never the matched text.
+        name_hits = scan_text(remote_ref, compiled)
+        if name_hits:
+            print(_ascii(f"pre-push REFUSED: {remote_ref} would be published under a name that "
+                         f"matches an internal-information rule ({name_hits[0][1]}). Push it under "
+                         f"another name.", strict=True))
+            worst = 1
         try:
             kind = _git(root, "cat-file", "-t", f"{local_sha}^{{}}").strip()
         except subprocess.CalledProcessError:

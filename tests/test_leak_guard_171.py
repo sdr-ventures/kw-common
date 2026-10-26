@@ -327,7 +327,7 @@ def test_ci_scans_exactly_what_the_reusable_workflow_scans() -> None:
         block = text[i:].split("run: |")[0]
         return set(re.findall(r"^\s+([A-Z_]+): \$\{\{", block, re.MULTILINE))
 
-    assert env_keys(CI) == env_keys(REUSABLE) and len(env_keys(REUSABLE)) == 7
+    assert env_keys(CI) == env_keys(REUSABLE) and len(env_keys(REUSABLE)) == 8
 
 
 @needs_bash

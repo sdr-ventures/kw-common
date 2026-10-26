@@ -44,6 +44,9 @@ request's commits, a push's new commits, or — for a tag — the commits since 
 is bounded at 30 minutes inside the workflow: a caller cannot set `timeout-minutes` on a job that
 calls a reusable workflow, so the bound lives there.
 
+For a tag, `with: scan_all_history: true` widens the range to every commit the tag reaches, not
+only those since the previous `v[0-9]*` tag. It is off by default; with it unset nothing changes.
+
 ⚠️ **Some events scan the whole history, not just what is new.** A range is never empty-and-clean:
 when there is nothing to start from, everything reachable is scanned, and the log says so
 (`::notice::… scanning ALL history`). That happens for the **first `v*` tag** a repository ever
@@ -85,6 +88,11 @@ repository can never stand in for the guard. Install the pin into a virtual envi
 `pip install --user` — isolated mode does not read the user site.
 
 A push of a tag that points at a blob or a tree is refused: no scan reads that content.
+
+`pre-push` also checks the name each pushed ref is published under (the remote's name, which a
+refspec may rename) against the same content rules, and refuses a match, naming the ref. A deletion
+publishes no name and is not checked. Only the content rules are used: a name shaped like a
+`<host>.lan-<suffix>` branch passes, because no rule matches a `.lan` followed by a hyphen.
 
 ### The project-side check is a separate layer
 
