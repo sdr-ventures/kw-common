@@ -11,6 +11,14 @@ exactly the moment the release notes are read most widely.
 
 ## [Unreleased]
 
+## [1.14.0] - 2026-10-26
+
+### Added
+
+* **`load_alert_settings(None, ...)` builds the settings from `config_values` alone.** Passing
+  `None` for the file reads nothing, on the build or on a send, and leaves `config_file` as `None`.
+  A file path works as before. `validate_boot` still refuses settings with no `config_file`.
+
 ## [1.13.0] - 2026-10-25
 
 ### Added

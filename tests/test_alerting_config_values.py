@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from kw_common import alerting
+from kw_common import alerting, alerting_env
 from kw_common.alerting import ERROR, AlertConfig, Alerter, AlertSettings
 from kw_common.alerting_env import (
     AlertEnvError,
@@ -226,3 +226,33 @@ def test_the_marker_digest_of_a_service_with_no_values_is_the_files_alone(tmp_pa
     marker.write_text(_marker_body(want, "feed-poller"), encoding="utf-8")
     assert _marker_matches(marker, path, "feed-poller") is True
     assert _marker_matches(marker, path, "feed-poller", {"SMTP_HOST": DB_HOST}) is False
+
+
+def test_values_only_builds_and_sends_with_no_file_read_anywhere(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """No file is passed, none is read on the build or the send, and the send reaches the host."""
+    class Reached(Exception):
+        """Raised by the stand-in so the send stops before any socket is opened."""
+
+    seen: list[tuple[object, ...]] = []
+
+    def stand_in(*args: object, **kwargs: object) -> None:
+        seen.append(args)
+        raise Reached
+
+    def no_read(*args: object, **kwargs: object) -> None:
+        raise AssertionError("a file was read")
+
+    monkeypatch.setattr(alerting.smtplib, "SMTP", stand_in)
+    monkeypatch.setattr(alerting_env, "read_config", no_read)
+    monkeypatch.setattr(alerting, "parse_env_file", no_read)
+    settings = load_alert_settings(None, "dev", "feed-poller",
+                                   config_values={"SMTP_HOST": DB_HOST, "SMTP_PORT": "2525",
+                                                  "EMAIL_FROM": "svc@example.com",
+                                                  "EMAIL_TO": "ops@example.com"})
+    assert settings.config_file is None
+    cfg = AlertConfig.load(settings)
+    with pytest.raises(Reached):
+        alerting._send_email(cfg, alerting.SEVERITIES[ERROR], "t", "m")
+    (args,) = seen
+    assert args[:2] == (DB_HOST, 2525)

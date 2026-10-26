@@ -5,9 +5,9 @@ name: leak-guard
 #
 #   jobs:
 #     leak-guard:
-#       uses: sdr-ventures/kw-common/.github/workflows/leak-guard.yml@v1.13.0
+#       uses: sdr-ventures/kw-common/.github/workflows/leak-guard.yml@v1.14.0
 #       with:
-#         version: v1.13.0
+#         version: v1.14.0
 #         # scan_all_history: true   # optional: a tag scans every commit it reaches
 #
 # publishes the check `leak-guard / No internal info (leak guard)`. Keep the caller's job id

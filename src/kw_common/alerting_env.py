@@ -395,7 +395,7 @@ def _clean_config_values(config_values: Mapping[str, str] | None) -> dict[str, s
     return cleaned
 
 
-def load_alert_settings(config_path: str | os.PathLike[str], deploy_env: str,
+def load_alert_settings(config_path: str | os.PathLike[str] | None, deploy_env: str,
                         service: str, *, logger_name: str = "",
                         smtp_proxy: str | None = None,
                         config_values: Mapping[str, str] | None = None) -> AlertSettings:
@@ -404,6 +404,12 @@ def load_alert_settings(config_path: str | os.PathLike[str], deploy_env: str,
     Pure in the sense that matters: it reads NO environment variable and has NO default path.
     Everything it needs is an argument, which is what makes it usable outside this deployment and
     testable without touching `os.environ`.
+
+    ⭐ `config_path` MAY BE `None`: NO FILE IS READ, and the settings are built from `config_values`
+    alone. Nothing on the send path reads a file then either, because `config_file` stays `None`.
+    A service that keeps every alert value in its database calls it as
+    `load_alert_settings(None, deploy_env, service, config_values=...)`. `validate_boot` refuses
+    settings with no `config_file`, so a values-only service does not boot-validate.
 
     `smtp_proxy` is the `SMTP_PROXY` environment value, or `None` when that variable is unset. It
     is passed in rather than read here, for the same reason as every other value above.
@@ -477,7 +483,7 @@ def load_alert_settings(config_path: str | os.PathLike[str], deploy_env: str,
     # having to fix; one is the fix.
     service = service.strip()
     caller = _clean_config_values(config_values)
-    values = {**read_config(config_path), **caller}
+    values = {**(read_config(config_path) if config_path is not None else {}), **caller}
     if caller:
         log.info("alerting: %d value(s) supplied by the caller replace the file's: %s",
                  len(caller), ", ".join(sorted(caller)))
@@ -517,7 +523,7 @@ def load_alert_settings(config_path: str | os.PathLike[str], deploy_env: str,
         # The FILE, not its contents. `alerting` re-reads it on every delivered notification so that
         # rotating the SMTP password or moving the inbox takes effect without a restart — a
         # property that would be thrown away by parsing the email block into the settings here.
-        config_file=str(Path(config_path)),
+        config_file=None if config_path is None else str(Path(config_path)),
         ntfy_url=ntfy_url,
         title_prefix=title_prefix,
         logger_name=logger_name,
