@@ -64,14 +64,14 @@ and downloads the template beside it; neither runs anything it downloaded.
 
 ```powershell
 New-Item -ItemType Directory -Force -Path .\configs
-Invoke-WebRequest -Uri https://raw.githubusercontent.com/sdr-ventures/kw-common/v1.13.0/alerting.env.template -OutFile .\configs\alerting.env
+Invoke-WebRequest -Uri https://raw.githubusercontent.com/sdr-ventures/kw-common/v1.14.0/alerting.env.template -OutFile .\configs\alerting.env
 ```
 
 ### macOS and Linux
 
 ```sh
 mkdir -p ./configs
-curl -fLo ./configs/alerting.env https://raw.githubusercontent.com/sdr-ventures/kw-common/v1.13.0/alerting.env.template
+curl -fLo ./configs/alerting.env https://raw.githubusercontent.com/sdr-ventures/kw-common/v1.14.0/alerting.env.template
 ```
 
 `-f` makes `curl` fail on an HTTP error rather than writing the error page into your config file —
@@ -232,7 +232,23 @@ settings = load_alert_settings(
 )
 ```
 
-The shared file is still read and still required; the mapping is merged **over** it, key by key:
+A service with no shared file at all passes `None` in its place. Nothing is read on the build or
+on a send, and `config_file` stays `None`:
+
+```python
+from kw_common.alerting_env import load_alert_settings
+
+settings = load_alert_settings(
+    None, "prod", "my-service",
+    config_values={"SMTP_HOST": "smtp.example.com", "SMTP_PASSWORD": "from-your-database"},
+)
+```
+
+`validate_boot` refuses settings with no `config_file`, so a service that passes `None` does not
+use it to validate its boot.
+
+The shared file is still read and still required when a path is passed; the mapping is merged
+**over** it, key by key:
 
 * a key present replaces the file's value for that service, including with `""`; a key absent
   leaves the file's value. Pass only the keys you actually hold;

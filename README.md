@@ -16,13 +16,13 @@ no port, no alignment audit, and no "which copy is the good one" question to ans
 Consumers install from git at an **exact tag** — never a branch:
 
 ```
-pip install git+https://github.com/sdr-ventures/kw-common@v1.13.0
+pip install git+https://github.com/sdr-ventures/kw-common@v1.14.0
 ```
 
 In a `requirements.in` / `requirements.txt`:
 
 ```
-kw-common @ git+https://github.com/sdr-ventures/kw-common@v1.13.0
+kw-common @ git+https://github.com/sdr-ventures/kw-common@v1.14.0
 ```
 
 ⛔ **Never pin a branch.** `@main` makes every rebuild of every consumer a silent, unreviewed
@@ -101,7 +101,8 @@ this deployment use the first without inheriting the second.
 The convention it makes executable: **one shared file, three variables.** One further variable is
 optional: `SMTP_PROXY`, which a service sets to override the shared file's proxy for itself. A
 service that keeps its own settings in a database passes them to `load_alert_settings(...,
-config_values={...})`, which merges them over the file's (see `docs/alerting-setup.md`).
+config_values={...})`, which merges them over the file's; with no file at all, pass `None` as the
+path (see `docs/alerting-setup.md`).
 
 | variable | mode | what it is |
 | --- | --- | --- |
