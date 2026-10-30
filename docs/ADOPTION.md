@@ -280,3 +280,9 @@ directly. Set it to `host:port` to use a proxy, set it blank to connect directly
 to keep the file's value. The same rules for the value apply. Needs the kw-common release that
 carries the override (see CHANGELOG).
 
+## Alert push ordering
+
+The push is sent before the email for every alert, so a slow or unreachable mail host no longer
+holds it. One `notify()` call logs one per-alert line whatever the number of channels. A service
+that already runs a push-only alerter beside a mail-only one to get that ordering can replace the
+pair with a single `notify()` after moving to a release that carries it (see CHANGELOG).
