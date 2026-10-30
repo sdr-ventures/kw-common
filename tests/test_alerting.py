@@ -108,7 +108,7 @@ def channels(monkeypatch: pytest.MonkeyPatch) -> dict[str, Spy]:
     """
     spies = {"email": Spy(), "ntfy": Spy()}
     monkeypatch.setattr(alerting, "_CHANNELS",
-                        tuple((name, spies[name]) for name in ("email", "ntfy")))
+                        tuple((name, spies[name]) for name in ("ntfy", "email")))
     return spies
 
 
@@ -722,6 +722,53 @@ def test_one_dead_channel_never_silences_the_other(
 
     assert results == {"email": "failed", "ntfy": "sent"}
     assert len(ntfy.calls) == 1, "the failing channel took the healthy one down with it"
+
+
+class Recording(Spy):
+    """A `Spy` that also appends its own name to a shared list, so a test can read the order."""
+
+    def __init__(self, name: str, order: list[str], fail: BaseException | None = None) -> None:
+        super().__init__(fail=fail)
+        self.name = name
+        self.order = order
+
+    def __call__(self, cfg: AlertConfig, spec: alerting.SeveritySpec, title: str,
+                 message: str) -> None:
+        self.order.append(self.name)
+        super().__call__(cfg, spec, title, message)
+
+
+def test_the_push_is_attempted_before_the_email(
+        alerter: Alerter, settings: AlertSettings, monkeypatch: pytest.MonkeyPatch) -> None:
+    write_email_config(settings)
+    order: list[str] = []
+    monkeypatch.setattr(alerting, "_CHANNELS", (("ntfy", Recording("ntfy", order)),
+                                                ("email", Recording("email", order))))
+
+    alerter.notify(ERROR, "svc: broken", "...")
+
+    assert order == ["ntfy", "email"]
+
+
+def test_a_hung_email_cannot_delay_or_undo_the_push(
+        alerter: Alerter, settings: AlertSettings, monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture) -> None:
+    """The mail host times out after the push has gone out: the push is `sent`, the email is
+    `failed` with its reason, and the alert is logged once, not once per channel."""
+    write_email_config(settings)
+    order: list[str] = []
+    ntfy = Recording("ntfy", order)
+    email = Recording("email", order, fail=TimeoutError("smtp timed out"))
+    monkeypatch.setattr(alerting, "_CHANNELS", (("ntfy", ntfy), ("email", email)))
+
+    with caplog.at_level(logging.INFO, logger="kw_common.alerting"):
+        results = alerter.notify(ERROR, "svc: db unreachable", "connection refused")
+
+    assert results == {"ntfy": "sent", "email": "failed"}
+    assert len(ntfy.calls) == 1
+    assert "email alert failed: TimeoutError: smtp timed out" in caplog.text
+    alert_lines = [r for r in caplog.records if "svc: db unreachable" in r.getMessage()]
+    assert len(alert_lines) == 1, "one alert must log one per-alert line, not one per channel"
 
 
 def test_the_severity_drives_the_priority_and_the_prefix(
@@ -2351,8 +2398,8 @@ def test_warn_if_unconfigured_names_the_ready_channels(
         alerter: Alerter, settings: AlertSettings, caplog: pytest.LogCaptureFixture) -> None:
     write_email_config(settings)
     with caplog.at_level(logging.INFO, logger="kw_common.alerting"):
-        assert alerter.warn_if_unconfigured() == ["email", "ntfy"]
-    assert "email + ntfy ready for svc" in caplog.text
+        assert alerter.warn_if_unconfigured() == ["ntfy", "email"]
+    assert "ntfy + email ready for svc" in caplog.text
 
 
 def test_warn_if_unconfigured_shouts_when_nothing_is_usable(
@@ -3973,7 +4020,7 @@ def test_the_clock_channel_and_sink_seams_are_public_and_reach_the_real_code(
     assert abs(alerting.now() - time.time()) < 60
 
     # channel_names follows the registry at call time, not a snapshot taken at import.
-    assert alerting.channel_names() == ("email", "ntfy")
+    assert alerting.channel_names() == ("ntfy", "email")
     monkeypatch.setattr(alerting, "_CHANNELS", (("ntfy", None),))
     assert alerting.channel_names() == ("ntfy",)
 

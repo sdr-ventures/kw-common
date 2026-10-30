@@ -11,6 +11,17 @@ exactly the moment the release notes are read most widely.
 
 ## [Unreleased]
 
+## [1.16.0] - 2026-10-30
+
+### Changed
+
+* **Every alert is sent to ntfy before email.** The channels run one after another, so a mail host
+  that hung held the push for up to `SMTP_TIMEOUT_S` per step. Now the push has already gone out
+  when email starts, and a slow or failing email cannot delay or undo it. A failed email still logs
+  its own line with the reason, and one alert still logs one per-alert line. Behaviour change, no
+  name changed: `channel_names()` and `warn_if_unconfigured()` list `ntfy` first, and the boot line
+  reads `ntfy + email ready`. MINOR.
+
 ## [1.15.0] - 2026-10-29
 
 ### Added

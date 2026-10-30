@@ -1971,9 +1971,12 @@ def _post_ntfy(cfg: AlertConfig, spec: SeveritySpec, title: str, message: str) -
         response.read()
 
 
+# ⭐ NTFY FIRST. The channels run in this order and one after another, so whatever is listed
+# second waits for the first to finish — and a mail host that hangs holds it for SMTP_TIMEOUT_S.
+# The push is the alert a human acts on at once; the email is the durable record.
 _CHANNELS: tuple[tuple[str, Callable[[AlertConfig, SeveritySpec, str, str], None]], ...] = (
-    ("email", _send_email),
     ("ntfy", _post_ntfy),
+    ("email", _send_email),
 )
 
 
