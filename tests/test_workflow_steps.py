@@ -12,7 +12,9 @@ GitHub sets. A grep would pass on a script that never ran.
 
 from __future__ import annotations
 
+import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -278,6 +280,14 @@ def test_the_reusable_workflow_is_callable_and_names_its_check_like_ci() -> None
     assert "name: No internal info (leak guard)" in text
     assert "fetch-depth: 0" in text and "persist-credentials: false" in text
     assert "kw-leak-guard --selftest" in text and "kw-leak-guard --range" in text
+
+
+def test_the_runner_input_defaults_to_github_hosted_and_is_a_json_array() -> None:
+    """Unset, the job stays on GitHub-hosted runners: a caller opts in, never by default."""
+    text = REUSABLE.read_text(encoding="utf-8")
+    assert "runs-on: ${{ fromJSON(inputs.runner) }}" in text
+    default = re.search(r"      runner:\n(?:        .*\n)*?        default: '(.*)'\n", text)
+    assert default is not None and json.loads(default.group(1)) == ["ubuntu-latest"]
 
 
 @needs_bash
