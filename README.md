@@ -16,13 +16,13 @@ no port, no alignment audit, and no "which copy is the good one" question to ans
 Consumers install from git at an **exact tag** — never a branch:
 
 ```
-pip install git+https://github.com/sdr-ventures/kw-common@v1.14.0
+pip install git+https://github.com/sdr-ventures/kw-common@v1.15.0
 ```
 
 In a `requirements.in` / `requirements.txt`:
 
 ```
-kw-common @ git+https://github.com/sdr-ventures/kw-common@v1.14.0
+kw-common @ git+https://github.com/sdr-ventures/kw-common@v1.15.0
 ```
 
 ⛔ **Never pin a branch.** `@main` makes every rebuild of every consumer a silent, unreviewed

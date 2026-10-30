@@ -47,6 +47,25 @@ calls a reusable workflow, so the bound lives there.
 For a tag, `with: scan_all_history: true` widens the range to every commit the tag reaches, not
 only those since the previous `v[0-9]*` tag. It is off by default; with it unset nothing changes.
 
+### Running the check on a private pool
+
+`with: runner:` sets the job's `runs-on` as a JSON array string. It defaults to
+`'["ubuntu-latest"]'`, so a caller that does not set it runs on GitHub-hosted runners exactly as
+before. Opting in needs the `v1.15.0` pin or later, in both `uses:` and `version:`:
+
+```yaml
+jobs:
+  leak-guard:
+    uses: sdr-ventures/kw-common/.github/workflows/leak-guard.yml@v1.15.0
+    with:
+      version: v1.15.0
+      runner: '["self-hosted","unraid","build"]'
+```
+
+⛔ **A public repository must never set `runner:`.** A self-hosted runner executes the code it
+checks out, and a public repository's pull requests can be opened by anyone. Only a private
+repository may opt in. Public repositories keep the default.
+
 ⚠️ **Some events scan the whole history, not just what is new.** A range is never empty-and-clean:
 when there is nothing to start from, everything reachable is scanned, and the log says so
 (`::notice::… scanning ALL history`). That happens for the **first `v*` tag** a repository ever

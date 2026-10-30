@@ -5,10 +5,11 @@ name: leak-guard
 #
 #   jobs:
 #     leak-guard:
-#       uses: sdr-ventures/kw-common/.github/workflows/leak-guard.yml@v1.14.0
+#       uses: sdr-ventures/kw-common/.github/workflows/leak-guard.yml@v1.15.0
 #       with:
-#         version: v1.14.0
+#         version: v1.15.0
 #         # scan_all_history: true   # optional: a tag scans every commit it reaches
+#         # runner: '["self-hosted","unraid","build"]'   # PRIVATE callers only, never a public repo
 #
 # publishes the check `leak-guard / No internal info (leak guard)`. Keep the caller's job id
 # `leak-guard` and the two pins equal: `@<ref>` picks these steps, `version` picks the engine they
@@ -33,6 +34,14 @@ on:
         required: false
         default: false
         type: boolean
+      runner:
+        description: >-
+          The job's `runs-on`, as a JSON array string. Default: GitHub-hosted `ubuntu-latest`.
+          A private caller may set its own pool, for example `["self-hosted","unraid","build"]`.
+          A public repository must never set it: a self-hosted runner executes the code it checks out.
+        required: false
+        default: '["ubuntu-latest"]'
+        type: string
 
 permissions:
   contents: read
@@ -40,7 +49,7 @@ permissions:
 jobs:
   leak-guard:
     name: No internal info (leak guard)
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(inputs.runner) }}
     # ⛔ A CALLER CANNOT SET THIS. `timeout-minutes` is not accepted on a job that calls a reusable
     # workflow, so without a bound here every consumer's check runs to GitHub's six-hour default
     # when git or pip hangs. The work is an install and a scan: seconds to a few minutes, even over
@@ -68,7 +77,9 @@ jobs:
             echo "::error::cannot."
             exit 1
           fi
-          # Its own venv, so nothing the caller's repository installs can shadow the guard.
+          # Its own venv, so nothing the caller's repository installs can shadow the guard. Rebuilt
+          # each run: a self-hosted runner keeps $RUNNER_TEMP between jobs.
+          rm -rf "$RUNNER_TEMP/kw-leak-guard"
           python -m venv "$RUNNER_TEMP/kw-leak-guard"
           "$RUNNER_TEMP/kw-leak-guard/bin/python" -m pip install --quiet --upgrade pip
           "$RUNNER_TEMP/kw-leak-guard/bin/python" -m pip install --quiet \

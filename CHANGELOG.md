@@ -11,6 +11,15 @@ exactly the moment the release notes are read most widely.
 
 ## [Unreleased]
 
+## [1.15.0] - 2026-10-29
+
+### Added
+
+* **`runner` input to the reusable leak-guard workflow.** A JSON array string, default
+  `'["ubuntu-latest"]'`, becomes the job's `runs-on`. A private caller can opt in to its own pool
+  (for example `'["self-hosted","unraid","build"]'`). Unset, the job runs as before. Public
+  repositories must not set it. MINOR.
+
 ## [1.14.0] - 2026-10-26
 
 ### Added
