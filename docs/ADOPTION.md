@@ -286,3 +286,41 @@ The push is sent before the email for every alert, so a slow or unreachable mail
 holds it. One `notify()` call logs one per-alert line whatever the number of channels. A service
 that already runs a push-only alerter beside a mail-only one to get that ordering can replace the
 pair with a single `notify()` after moving to a release that carries it (see CHANGELOG).
+
+## Adopting alerting and email from a database-held settings table
+
+A service whose alert settings live in its own database, and are edited in its admin screens, does
+not read a shared file. It needs no shared mount for alerting and no temporary file either. It
+uses two public names and one loader call:
+
+```python
+from kw_common.alerting import configure, send_email
+from kw_common.alerting_env import load_alert_settings, validate_boot
+
+settings = load_alert_settings(None, deploy_env, "my-service", config_values=stored_values)
+alerter = configure(settings)
+validate_boot(settings, deploy_env, config_path, alerter=alerter)   # raises AlertEnvError
+
+send_email("member@example.com", "[My Service] Your invitation", body_text)
+```
+
+- `stored_values` is a mapping of the file's own key names to strings: the email keys
+  (`EMAIL_TO`, `EMAIL_FROM`, `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_PROXY`)
+  and the ntfy keys (`NTFY_URL_<ENV>`, and `NTFY_URL_<SERVICE>` for a service's own topic).
+  Pass only the keys the database holds. A blank value is a value.
+- `deploy_env` is still the one boot variable the service declares. `config_path` is the service's
+  own read-write directory, where the validation marker is written. It is not the shared file.
+- `validate_boot` judges the values alone. It reads no file and checks no shared layout. The
+  marker records a digest of the values, so changing a stored value re-validates on the next boot,
+  and an unchanged boot skips. A refusal names "the service's own settings" and the keys, never a
+  value.
+- Re-run `configure()` and `validate_boot` when a stored value changes. The settings object holds
+  the values it was built from, so a value edited in the database takes effect at the next build.
+- `send_email` sends one plain-text message to one address through the alert channel, with the
+  same host, proxy, login and sender. It takes no severity prefix; put any prefix in the subject.
+  It raises `EmailUnavailable` when no alerter is installed or the channel is not usable.
+- Before a boot that depends on email, check the channel was built: `warn_if_unconfigured` names
+  each channel that is not ready.
+
+The shared-file path (`load_alert_settings_from_env`, `validate_boot_from_env`) is unchanged, and a
+service on that path needs none of this.

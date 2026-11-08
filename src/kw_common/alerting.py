@@ -215,7 +215,7 @@ import time
 import urllib.request
 from collections import deque
 from collections.abc import Callable, Iterator, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from email.message import EmailMessage
 from email.utils import getaddresses
@@ -234,6 +234,11 @@ __all__ = [
     "current_alerter",
     "alerter_scope",
     "notify",
+    # The one-recipient email send (a database-settings service's invite, a password reset, anything
+    # that is not an operator alert). The same channel, proxy and safety checks as an alert; the
+    # private `_send_email` is not a contract and is not for consumers.
+    "send_email",
+    "EmailUnavailable",
     "warn_if_unconfigured",
     "smtp_port_fault",
     "parse_since",
@@ -1794,6 +1799,18 @@ class _TunnelSMTPSSL(_TunnelSMTP):
 
 
 def _send_email(cfg: AlertConfig, spec: SeveritySpec, title: str, message: str) -> None:
+    """An alert's email: the severity prefix, the title, and the message. See `_deliver_email`."""
+    _deliver_email(cfg, f"{spec.prefix} {title}", message)
+
+
+def _deliver_email(cfg: AlertConfig, subject: str, message: str) -> None:
+    """The one SMTP send every email goes through: an alert and `send_email` alike.
+
+    ⭐ ONE PATH, ON PURPOSE. The proxy, the TLS verification, the ASCII check on the credentials
+    and the recipient normalisation all live here, so a single-recipient send cannot be safer or
+    less safe than an alert. Logs neither `subject` nor `message`: a single-recipient send's body
+    may carry an invite link.
+    """
     lg = cfg._log
     email = cfg.email or {}
     # ⭐ REFUSED HERE, BEFORE smtplib IS HANDED THE CREDENTIAL — because smtplib's own refusal
@@ -1821,7 +1838,7 @@ def _send_email(cfg: AlertConfig, spec: SeveritySpec, title: str, message: str) 
                 f"{_fault_shape(value)} is REJECTED and this alert is not being emailed. "
                 f"Re-set it to an ASCII value.") from None
     msg = EmailMessage()
-    msg["Subject"] = f"{spec.prefix} {title}"
+    msg["Subject"] = subject
     msg["From"] = email["EMAIL_FROM"]
     # Normalised, never raw: `send_message()` derives the recipient list from this header, and a
     # `;` in it silently cost recipients — how many depends on the value and the Python build, so
@@ -1863,6 +1880,55 @@ def _send_email(cfg: AlertConfig, spec: SeveritySpec, title: str, message: str) 
         lg.warning("email alert delivered to some recipients only — the server refused %d "
                    "recipient(s). Check EMAIL_TO against the server's recipient policy.",
                    len(refused))
+
+
+class EmailUnavailable(RuntimeError):
+    """`send_email` has no usable email channel to send through.
+
+    The message names why, never a value.
+    """
+
+
+def _is_control_free(text: str) -> bool:
+    return not any(ord(ch) < 32 or ord(ch) == 127 for ch in text)
+
+
+def send_email(to: str, subject: str, body: str, *, alerter: Alerter | None = None) -> None:
+    """Send ONE plain-text email to `to`, through the same channel an alert uses.
+
+    The host, port, proxy, login, sender and TLS checks are the alert channel's own, read from the
+    same settings, so a service that configures alerting configures this too. Blocking: it opens a
+    network connection, so call it from a thread when on the event loop.
+
+    `subject` is sent exactly as given. An alert's severity prefix is not added: a single-recipient
+    send is not an alert, and the caller writes whatever prefix it wants.
+
+    Raises `EmailUnavailable` when no alerter is installed or the email channel is not usable.
+    Raises `ValueError` for a `to` that is not exactly one address, or a `to` or `subject` that
+    carries a control character. Anything the SMTP exchange raises propagates unchanged. Neither
+    `subject` nor `body` is logged, and the body is never echoed in an error message.
+
+    There is no retry, and there is none on an alert either: the caller decides whether a failed
+    send is worth repeating.
+    """
+    target = alerter or current_alerter()
+    if not isinstance(target, Alerter):
+        raise EmailUnavailable("no alerter is installed: call alerting.configure() first")
+    if not (isinstance(to, str) and isinstance(subject, str)):
+        raise ValueError("send_email takes a string recipient and a string subject")
+    if not (_is_control_free(to) and _is_control_free(subject)):
+        raise ValueError("send_email: the recipient and the subject may not contain a control "
+                         "character; a mail header cannot carry one")
+    # `getaddresses` alone reads `a@x;b@y` as one address, so a separator is refused outright.
+    addresses = getaddresses([to])
+    if len(addresses) != 1 or not addresses[0][1] or any(sep in to for sep in ",;"):
+        raise ValueError("send_email takes exactly one recipient address")
+    current = target.config()
+    cfg = replace(current, email={**(current.email or {}), "EMAIL_TO": to})
+    if not cfg.email_ready():
+        raise EmailUnavailable("the email channel is not configured or not usable; the boot "
+                               "warning names the setting")
+    _deliver_email(cfg, subject, body)
 
 
 class _RefuseRedirects(urllib.request.HTTPRedirectHandler):

@@ -64,14 +64,14 @@ and downloads the template beside it; neither runs anything it downloaded.
 
 ```powershell
 New-Item -ItemType Directory -Force -Path .\configs
-Invoke-WebRequest -Uri https://raw.githubusercontent.com/sdr-ventures/kw-common/v1.16.0/alerting.env.template -OutFile .\configs\alerting.env
+Invoke-WebRequest -Uri https://raw.githubusercontent.com/sdr-ventures/kw-common/v1.17.0/alerting.env.template -OutFile .\configs\alerting.env
 ```
 
 ### macOS and Linux
 
 ```sh
 mkdir -p ./configs
-curl -fLo ./configs/alerting.env https://raw.githubusercontent.com/sdr-ventures/kw-common/v1.16.0/alerting.env.template
+curl -fLo ./configs/alerting.env https://raw.githubusercontent.com/sdr-ventures/kw-common/v1.17.0/alerting.env.template
 ```
 
 `-f` makes `curl` fail on an HTTP error rather than writing the error page into your config file —
@@ -244,8 +244,10 @@ settings = load_alert_settings(
 )
 ```
 
-`validate_boot` refuses settings with no `config_file`, so a service that passes `None` does not
-use it to validate its boot.
+A service that passes `None` validates its boot from those values alone with `validate_boot`, as a
+file-based service does. Its refusals name "the service's own settings" in place of a path, and the
+marker it writes records the values' digest, so a changed value re-validates and an unchanged boot
+skips. Settings with neither a file nor values refuse to validate.
 
 The shared file is still read and still required when a path is passed; the mapping is merged
 **over** it, key by key:

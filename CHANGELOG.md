@@ -11,6 +11,27 @@ exactly the moment the release notes are read most widely.
 
 ## [Unreleased]
 
+## [1.17.0] - 2026-11-08
+
+### Added
+
+* **`send_email(to, subject, body, *, alerter=None)`** sends one plain-text email to one address
+  through the alert email channel: the same host, port, proxy, login, sender and TLS verification
+  an alert uses. The subject is sent exactly as given (no severity prefix is added). It raises
+  `EmailUnavailable` when no alerter is installed or the channel is not usable, and `ValueError`
+  for a recipient that is not exactly one address or a control character in the recipient or
+  subject. There is no retry, as there is none on an alert. MINOR.
+* **Values-only validation.** `validate_boot` accepts settings built with
+  `load_alert_settings(None, ..., config_values=...)`, so a service that keeps its alert settings
+  in its own database validates with no shared file. The marker records the digest of the values
+  alone. A refusal names "the service's own settings" in place of a path. MINOR.
+
+### Changed
+
+* `validate_boot` refuses settings that carry neither a `config_file` nor `config_values`. It
+  previously refused every settings object without a `config_file`. File-based services are
+  unaffected: their marker digest, checks and messages are byte-for-byte the same.
+
 ## [1.16.0] - 2026-10-30
 
 ### Changed
