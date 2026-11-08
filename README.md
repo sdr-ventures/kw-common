@@ -16,13 +16,13 @@ no port, no alignment audit, and no "which copy is the good one" question to ans
 Consumers install from git at an **exact tag** — never a branch:
 
 ```
-pip install git+https://github.com/sdr-ventures/kw-common@v1.16.0
+pip install git+https://github.com/sdr-ventures/kw-common@v1.17.0
 ```
 
 In a `requirements.in` / `requirements.txt`:
 
 ```
-kw-common @ git+https://github.com/sdr-ventures/kw-common@v1.16.0
+kw-common @ git+https://github.com/sdr-ventures/kw-common@v1.17.0
 ```
 
 ⛔ **Never pin a branch.** `@main` makes every rebuild of every consumer a silent, unreviewed
@@ -91,6 +91,28 @@ are all readable by anything on the path. A `http://` URL turns the channel off,
 For a self-hosted endpoint on a trusted network, `AlertSettings(allow_cleartext_ntfy=True)` is the
 supported way to accept that exposure deliberately. Userinfo (`https://user:pass@host/topic`) is
 refused outright — `urllib` cannot send it, and its failure printed the password.
+
+### Sending one email — `send_email`
+
+`send_email(to, subject, body, *, alerter=None)` sends ONE plain-text message to ONE address
+through the same email channel an alert uses: the same host, port, proxy, login, sender and TLS
+verification, from the same settings. It is for a message that is not an operator alert, such as an
+invite or a password reset. The subject goes out exactly as given; no severity prefix is added.
+
+```python
+from kw_common.alerting import EmailUnavailable, send_email
+
+body_text = "Open the link to accept your invitation."
+try:
+    send_email("member@example.com", "[My Service] Your invitation", body_text)
+except EmailUnavailable:
+    ...  # no alerter installed, or the email channel is not configured or not usable
+```
+
+It raises `ValueError` for a recipient that is not exactly one address, or a recipient or subject
+carrying a control character. Anything the SMTP exchange raises propagates unchanged. There is no
+retry, as there is none on an alert. Neither the subject nor the body is logged. Call it from a
+thread when on an event loop: it opens a network connection.
 
 ## Ops alerting configuration — `kw_common.alerting_env`
 

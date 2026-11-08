@@ -408,8 +408,8 @@ def load_alert_settings(config_path: str | os.PathLike[str] | None, deploy_env: 
     ⭐ `config_path` MAY BE `None`: NO FILE IS READ, and the settings are built from `config_values`
     alone. Nothing on the send path reads a file then either, because `config_file` stays `None`.
     A service that keeps every alert value in its database calls it as
-    `load_alert_settings(None, deploy_env, service, config_values=...)`. `validate_boot` refuses
-    settings with no `config_file`, so a values-only service does not boot-validate.
+    `load_alert_settings(None, deploy_env, service, config_values=...)`. `validate_boot` accepts
+    those settings when they carry `config_values` (it judges the values alone; see there).
 
     `smtp_proxy` is the `SMTP_PROXY` environment value, or `None` when that variable is unset. It
     is passed in rather than read here, for the same reason as every other value above.
@@ -631,7 +631,7 @@ def marker_name(deploy_env: str) -> str:
     return f"{MARKER_NAME}-{normalise_env(deploy_env)}"
 
 
-def _config_digest(config: str | os.PathLike[str],
+def _config_digest(config: str | os.PathLike[str] | None,
                    caller: Mapping[str, str] | None = None) -> str:
     """`sha256:<hex>` for the config file's RAW BYTES, or `""` if it cannot be read.
 
@@ -639,6 +639,10 @@ def _config_digest(config: str | os.PathLike[str],
     order after a separator the file cannot produce, so a change to a database-held setting
     re-validates exactly as an edit to the file does. With none the digest is the file's alone,
     byte for byte what it was, so an upgrade does not re-validate a service that passes none.
+
+    ⭐ `config` MAY BE `None` (a values-only service): the file's bytes are then empty and the
+    digest is the caller's values alone. A values-only service with no values has nothing to
+    digest, and `validate_boot` refuses it before asking.
 
     ⚠️ BYTES, NOT PARSED TEXT, and not decoded text either. A file re-saved in another encoding
     parses to the same keys and is a different file — cp1252 is the encoding this module refuses
@@ -650,7 +654,7 @@ def _config_digest(config: str | os.PathLike[str],
     properly by `_check_layout` / `read_config`, which say WHICH thing was wrong.
     """
     try:
-        body = Path(config).read_bytes()
+        body = b"" if config is None else Path(config).read_bytes()
         if caller:
             # NUL cannot appear in the text file the parser reads, so no file can fake the suffix.
             body += b"\0config_values\0" + json.dumps(dict(caller), sort_keys=True).encode("utf-8")
@@ -823,7 +827,7 @@ def _report_a_replaced_service(marker: Path, was: str | None, service: str) -> N
         was, service, marker)
 
 
-def _marker_matches(marker: Path, config: Path, service: str,
+def _marker_matches(marker: Path, config: Path | None, service: str,
                     caller: Mapping[str, str] | None = None) -> bool:
     """Whether this exact config file has already been validated BY THIS SERVICE (#18).
 
@@ -905,6 +909,13 @@ def validate_boot(settings: AlertSettings, deploy_env: str,
     and this check is what answers it for a caller that builds settings some other way and reaches
     validation with a `shared_root` of its own.
 
+    ⭐ A VALUES-ONLY SERVICE — settings from `load_alert_settings(None, ..., config_values=...)`,
+    which keeps every alert value in its own database — validates with NO shared file: nothing is
+    read from disk, `shared_root` is not needed, and the marker records the digest of the values
+    alone (`_config_digest`). Its refusals name "the service's own settings", never a path. The
+    settings must carry `config_values`; with neither a file nor values there is nothing to check
+    and the call refuses.
+
     `alerter` is the `Alerter` the success notification goes through; `None` uses the process
     default installed by `alerting.configure()`. With NO alerter available the marker is NOT
     written, so the confirmation is not lost — see `_announce`.
@@ -923,15 +934,19 @@ def validate_boot(settings: AlertSettings, deploy_env: str,
     """
     env = normalise_env(deploy_env)
     config = Path(settings.config_file) if settings.config_file else None
-    if config is None:
-        raise _refuse(
-            "these settings carry no config_file, so there is nothing to validate. Build them "
-            "with load_alert_settings() or load_alert_settings_from_env().")
-
-    marker = Path(marker_dir) / marker_name(env)
     # The caller's own values (`AlertSettings.config_values`) are part of what is validated: they
     # complete or replace the file's, and a change to them must re-validate like a file edit.
     caller = dict(getattr(settings, "config_values", None) or {})
+    if config is None and not caller:
+        raise _refuse(
+            "these settings carry neither a config_file nor config_values, so there is nothing to "
+            "validate. Build them with load_alert_settings() or load_alert_settings_from_env(), or "
+            "pass the values the service keeps in its database as config_values=.")
+
+    # ⭐ A VALUES-ONLY SERVICE (`config_file` None, `config_values` set) is validated from those
+    # values alone: no file is read, no shared layout is checked, and the marker digest is the
+    # values' digest. The file path below is unchanged for every service that has a file.
+    marker = Path(marker_dir) / marker_name(env)
     if _marker_matches(marker, config, settings.service, caller):
         log.info("alerting: %s configuration validated on an earlier boot (%s records the current "
                  "digest of %s); skipping. Any edit to the config file forces a re-check; delete "
@@ -951,6 +966,7 @@ def validate_boot(settings: AlertSettings, deploy_env: str,
     # this boot REPLACED rather than what it merely found. See `_report_a_replaced_service`.
     was = _service_the_marker_records(marker)
     _check_layout(config, shared_root)
+    # ⭐ THE FILE'S TEXT IS EMPTY FOR A VALUES-ONLY SERVICE: `values` is then the caller's alone.
     # ⭐⭐ THE DIGEST IS TAKEN HERE AND CARRIED TO THE MARKER — before anything whose RESULT is
     # used to validate has read the file. Not before every read: `_marker_matches` above may hash
     # it, to answer whether to skip at all, and `_check_layout` stats directories. What must not
@@ -968,7 +984,8 @@ def validate_boot(settings: AlertSettings, deploy_env: str,
     # contents and marked as its old ones, so the next boot re-validates. Stated rather than
     # called atomic, because it is not.
     digest = _config_digest(config, caller)
-    values = {**read_config(config), **caller}   # read_config raises AlertEnvError, naming why
+    # read_config raises AlertEnvError, naming why
+    values = {**(read_config(config) if config is not None else {}), **caller}
     _check_required(values, env, config)
     _check_usable(settings, config)
 
@@ -1054,7 +1071,7 @@ def _checked_is_dir(path: Path, description: str) -> bool:
         ) from exc
 
 
-def _check_layout(config: Path, shared_root: str | os.PathLike[str] | None) -> None:
+def _check_layout(config: Path | None, shared_root: str | os.PathLike[str] | None) -> None:
     """The mount and the structure, asked as separate questions from "is the file readable"."""
     if shared_root is not None:
         root = Path(shared_root)
@@ -1064,6 +1081,8 @@ def _check_layout(config: Path, shared_root: str | os.PathLike[str] | None) -> N
                 f"reads like this when the volume was never added to the template, was added with "
                 f"a host path that does not exist, or the value names something that is not a "
                 f"directory at all.")
+    if config is None:
+        return      # a values-only service has no file, so it has no structure to check
     parent = config.parent
     if not _checked_is_dir(parent, "the shared config directory"):
         raise _refuse(
@@ -1099,7 +1118,13 @@ def _is_placeholder(value: str) -> bool:
     return text == _PLACEHOLDER or text.startswith(_PLACEHOLDER + "-")
 
 
-def _check_required(values: dict[str, str], env: str, config: Path) -> None:
+def _where(config: Path | None) -> str:
+    """Where the values came from, for a message: the file, or the caller's values for a
+    values-only service. Names the source only, never a value."""
+    return "the service's own settings (config_values)" if config is None else str(config)
+
+
+def _check_required(values: dict[str, str], env: str, config: Path | None) -> None:
     """Every key this environment requires carries a real value — not blank, not a placeholder."""
     required = required_keys(env)
     missing = [k for k in required if not values.get(k, "").strip()]
@@ -1107,17 +1132,18 @@ def _check_required(values: dict[str, str], env: str, config: Path) -> None:
         # ⭐ NAMES ONLY, NEVER VALUES. One of these keys is the SMTP password, and this message is
         # the line an operator pastes into a bug report.
         raise _refuse(
-            f"{config} is missing or blank for: {', '.join(missing)}. Those are the keys "
+            f"{_where(config)} is missing or blank for: {', '.join(missing)}. Those are the keys "
             f"{env!r} requires; {', '.join(OPTIONAL_KEYS)} are optional. Refusing to boot rather "
             f"than starting a service whose alerts go nowhere.")
     unfilled = [k for k in required if _is_placeholder(values.get(k, ""))]
     if unfilled:
         raise _refuse(
-            f"{config} still carries the {_PLACEHOLDER} placeholder for: {', '.join(unfilled)}. "
-            f"That is the template as it ships, not a configuration — fill those in.")
+            f"{_where(config)} still carries the {_PLACEHOLDER} placeholder for: "
+            f"{', '.join(unfilled)}. That is the template as it ships, not a configuration — fill "
+            f"those in.")
 
 
-def _check_usable(settings: AlertSettings, config: Path) -> None:
+def _check_usable(settings: AlertSettings, config: Path | None) -> None:
     """Every configured channel is one `alerting` can actually send on.
 
     ⭐⭐ ASKED OF `alerting`'s OWN READINESS FUNCTIONS, never re-implemented here. A second answer
@@ -1178,7 +1204,7 @@ def _check_usable(settings: AlertSettings, config: Path) -> None:
             + why)
 
 
-def _announce(settings: AlertSettings, env: str, values: dict[str, str], config: Path,
+def _announce(settings: AlertSettings, env: str, values: dict[str, str], config: Path | None,
               alerter: Alerter | None) -> bool:
     """Send the one-time validation alert. Returns whether there was anything to send it through.
 
@@ -1198,13 +1224,14 @@ def _announce(settings: AlertSettings, env: str, values: dict[str, str], config:
                     "validate_boot(), or pass alerter=.")
         return False
     dedicated = bool(values.get(ntfy_key(settings.service), "").strip())
+    source = "the service's own settings" if config is None else config.name
     # ⛔ NO VALUES IN THE BODY. This message goes to email and to a push topic; the file it is
     # describing holds an SMTP password. It says which KEYS were used, never what they hold.
     target.notify(
         OK,
         "Alerting configuration validated",
         f"{settings.service} started in {env} and its alerting configuration checks out: "
-        f"{config.name} carries every key {env} requires, and this service "
+        f"{source} carries every key {env} requires, and this service "
         f"is on {'its own ntfy topic' if dedicated else f'the shared {env} topic'}. "
         f"This message is the proof that the channel works; it is sent once per configuration "
         f"change, not on every boot.",
