@@ -16,13 +16,13 @@ no port, no alignment audit, and no "which copy is the good one" question to ans
 Consumers install from git at an **exact tag** — never a branch:
 
 ```
-pip install git+https://github.com/sdr-ventures/kw-common@v1.18.0
+pip install git+https://github.com/sdr-ventures/kw-common@v1.19.0
 ```
 
 In a `requirements.in` / `requirements.txt`:
 
 ```
-kw-common @ git+https://github.com/sdr-ventures/kw-common@v1.18.0
+kw-common @ git+https://github.com/sdr-ventures/kw-common@v1.19.0
 ```
 
 ⛔ **Never pin a branch.** `@main` makes every rebuild of every consumer a silent, unreviewed
@@ -41,7 +41,7 @@ documentation.
 | --- | --- |
 | `kw_common.alerting` | The `notify(severity, title, message)` contract: fan-out to email + ntfy, edge-trigger vs. escalating de-duplication, and a small retrievable JSONL error log. |
 | `kw_common.alerting_env` | The deployment layer `alerting` refuses to be: one shared config file plus three variables in, `AlertSettings` out — and the boot check that refuses to start when they are wrong. |
-| `kw_common.bearer` | Check an `Authorization: Bearer` header against one or two accepted values in constant time, so a credential rotates with no outage. Standard library only. |
+| `kw_common.bearer` | Check an `Authorization: Bearer` header against one or two accepted values, or one or two held SHA-256 verifiers, in constant time, so a credential rotates with no outage. Standard library only. |
 | `kw_common.leakguard` | The internal-information leak guard: shape-based scans of the tracked tree, the index, and the commits a push publishes — plus the `kw-leak-guard` command. |
 
 `import kw_common` pulls in nothing, and no module drags in one you did not ask for — `alerting`
@@ -135,6 +135,22 @@ authorised = check_bearer(authorization_header, ACCEPTED)       # False, never a
 A missing or malformed header, another scheme, extra parts, and an empty accepted set all return
 `False` (it fails closed). Nothing is logged and no error text carries a value. The rotation
 procedure is in `docs/ADOPTION.md`.
+
+A service can hold a **verifier** (the hex SHA-256 of the bearer) instead of the bearer, so its
+configuration cannot be replayed as the credential. `bearer_verifier(token)` computes it (once,
+where the bearer is issued), `accepted_verifiers(current, upcoming=None)` validates the held
+digests at boot, and `check_bearer_verifier(header, held)` hashes the presented token and compares
+it in constant time, with the same header rules as `check_bearer`.
+
+```python
+from kw_common.bearer import accepted_verifiers, bearer_verifier, check_bearer_verifier
+
+issued_bearer = "current-secret"  # known where the credential is issued, never to the service
+current_digest = bearer_verifier(issued_bearer)  # this value goes into the service's config
+HELD = accepted_verifiers(current_digest, None)  # raises BearerConfigError at boot
+request_header = "Bearer current-secret"  # the request's Authorization header, or None
+authorised = check_bearer_verifier(request_header, HELD)  # False, never an exception
+```
 
 ## Ops alerting configuration — `kw_common.alerting_env`
 
