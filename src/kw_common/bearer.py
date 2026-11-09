@@ -11,6 +11,11 @@ one call:
 
 Standard library only, no logging, no environment reads: the caller passes what it holds.
 
+⭐ HOLD A VERIFIER, NOT THE BEARER. `bearer_verifier(token)` is the hex SHA-256 of a bearer;
+`accepted_verifiers` and `check_bearer_verifier` are the same pair as above for a service that
+holds only that digest, so its configuration cannot be replayed as the credential. Holding the
+plain bearer with `accepted_bearers`/`check_bearer` keeps working.
+
 ⭐ A ROTATION IS TWO VALUES, NOT A WINDOW OF DOWNTIME. The engine is given the current value and
 the next one and accepts both. The caller then switches to the next value, and the engine is
 restarted with only the next one. At no point does a request carrying a value the caller still
@@ -27,10 +32,21 @@ wrong, never what it held, so a mistyped credential does not end up in a log.
 
 from __future__ import annotations
 
+import hashlib
 import hmac
 from collections.abc import Iterable
 
-__all__ = ["BearerConfigError", "accepted_bearers", "check_bearer"]
+__all__ = [
+    "BearerConfigError",
+    "accepted_bearers",
+    "accepted_verifiers",
+    "bearer_verifier",
+    "check_bearer",
+    "check_bearer_verifier",
+]
+
+_DIGEST_LEN = 64  # hex characters of a SHA-256 digest
+_HEX = frozenset("0123456789abcdef")
 
 # A header longer than this cannot be a managed bearer, and refusing it up front keeps a hostile
 # caller from making every request do work proportional to what it sent.
@@ -91,16 +107,27 @@ def check_bearer(authorization: str | None, accepted: Iterable[str] | str | None
     An empty set accepts nothing: this fails closed, it never fails open. Blank members are
     ignored, so a blank "next" value can never match an empty token.
     """
-    if isinstance(accepted, str):
-        accepted = (accepted,)
-    if not isinstance(authorization, str) or accepted is None:
-        return False
+    presented = _presented(authorization)
+    return presented is not None and _matches_any(presented, accepted)
+
+
+def _presented(authorization: object) -> bytes | None:
+    """The token of a well-formed `Bearer <token>` header as ASCII bytes, else None."""
+    if not isinstance(authorization, str):
+        return None
     scheme, sep, token = authorization.partition(" ")
     if sep != " " or scheme.lower() != "bearer":
-        return False
+        return None
     if not token or len(token) > _MAX_TOKEN or not _token_ok(token):
+        return None
+    return token.encode("ascii")
+
+
+def _matches_any(presented: bytes, accepted: Iterable[str] | str | None) -> bool:
+    if isinstance(accepted, str):
+        accepted = (accepted,)
+    if accepted is None:
         return False
-    presented = token.encode("ascii")
     ok = False
     for value in accepted:
         if not isinstance(value, str) or not value:
@@ -108,3 +135,58 @@ def check_bearer(authorization: str | None, accepted: Iterable[str] | str | None
         # `|=` and no break: every value is compared whatever matched first.
         ok |= hmac.compare_digest(presented, value.encode("utf-8"))
     return ok
+
+
+def bearer_verifier(token: str) -> str:
+    """The verifier of a bearer: the lowercase hex SHA-256 of its ASCII bytes (64 characters).
+
+    A service holds this instead of the bearer, so its configuration cannot be replayed as the
+    credential. Unsalted and fast on purpose: a managed bearer is a long random string, so there is
+    nothing to guess, and the check must be cheap on every request. Raises `BearerConfigError` for
+    a token that cannot travel in a header; the message never carries it.
+    """
+    if not isinstance(token, str) or not token or len(token) > _MAX_TOKEN or not _token_ok(token):
+        raise BearerConfigError("the bearer is missing or cannot travel in a header")
+    return hashlib.sha256(token.encode("ascii")).hexdigest()
+
+
+def accepted_verifiers(current: str | None, upcoming: str | None = None) -> tuple[str, ...]:
+    """Build the held verifier set once, at boot: the current one plus, in a rotation, the next.
+
+    Each is the hex SHA-256 of a bearer, as `bearer_verifier` returns it. Whitespace around a value
+    is stripped and case is folded, so a verifier pasted in upper case still matches. `current` is
+    required; `upcoming` is optional and None or blank means no rotation is under way.
+
+    Raises `BearerConfigError` for a missing `current`, or for a value that is not exactly 64 hex
+    characters (a plain bearer pasted by mistake lands here). The message names the argument and
+    never what it held.
+    """
+    out: list[str] = []
+    for name, raw in (("current", current), ("upcoming", upcoming)):
+        if raw is None or (isinstance(raw, str) and not raw.strip()):
+            if name == "current":
+                raise BearerConfigError("the current verifier is missing or blank")
+            continue
+        if not isinstance(raw, str):
+            raise BearerConfigError(f"the {name} verifier is not a string")
+        value = raw.strip().lower()
+        if len(value) != _DIGEST_LEN or any(c not in _HEX for c in value):
+            raise BearerConfigError(
+                f"the {name} verifier is not a {_DIGEST_LEN}-character hex SHA-256 digest"
+            )
+        out.append(value)
+    return tuple(dict.fromkeys(out))
+
+
+def check_bearer_verifier(authorization: str | None, verifiers: Iterable[str] | str | None) -> bool:
+    """True only when `authorization` is `Bearer <token>` and the token's verifier is held.
+
+    The presented token is hashed (`bearer_verifier`) and the digest compared in constant time
+    with every held verifier, with no early exit. Header handling, fail-closed behaviour and
+    "never raises on header content" are exactly those of `check_bearer`. `verifiers` is what
+    `accepted_verifiers` returned.
+    """
+    presented = _presented(authorization)
+    if presented is None:
+        return False
+    return _matches_any(hashlib.sha256(presented).hexdigest().encode("ascii"), verifiers)

@@ -156,4 +156,11 @@ def test_nothing_is_logged_and_no_value_is_in_a_message(caplog: pytest.LogCaptur
 
 
 def test_the_public_names_are_exactly_the_documented_ones() -> None:
-    assert sorted(bearer.__all__) == ["BearerConfigError", "accepted_bearers", "check_bearer"]
+    assert sorted(bearer.__all__) == [
+        "BearerConfigError",
+        "accepted_bearers",
+        "accepted_verifiers",
+        "bearer_verifier",
+        "check_bearer",
+        "check_bearer_verifier",
+    ]

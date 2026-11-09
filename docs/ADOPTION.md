@@ -368,3 +368,32 @@ if not check_bearer(request_authorization_header, ACCEPTED):
 Do the steps in this order. Reversing steps 2 and 3 fails every request the caller makes in
 between, which is the outage this avoids. If the old value is suspected stolen, run the same steps
 without waiting in step 3, and treat any request refused in the gap as the cost.
+
+### Holding a verifier instead of the bearer
+
+A service that must not keep the credential itself holds its SHA-256 digest (hex, 64 characters)
+and checks with the verifier functions. Nothing else changes: the caller still sends the bearer.
+
+```python
+from kw_common.bearer import BearerConfigError, accepted_verifiers, check_bearer_verifier
+
+# Once, at boot. The values are digests, never bearers.
+HELD = accepted_verifiers(current_digest_from_config, next_digest_from_config_or_none)
+
+# On every request, before the body is read.
+if not check_bearer_verifier(request_authorization_header, HELD):
+    ...  # answer 401 with no detail, and read nothing further
+```
+
+- The digest is made where the bearer is issued, once: `bearer_verifier(bearer)` (or any
+  `sha256` of the bearer's ASCII bytes, printed as lowercase hex). The service's configuration
+  carries the digest only.
+- `accepted_verifiers` raises `BearerConfigError` for a missing current digest or a value that is
+  not 64 hex characters. A plain bearer pasted by mistake is refused at boot, and the message names
+  which value, never what it held.
+- The digest is unsalted by design: a managed bearer is a long random string, so there is nothing to
+  guess. Do not use this for a human-chosen secret.
+- The rotation is the one above, with digests: put the next bearer's digest into the "next"
+  setting, switch the caller, then keep the next digest alone. Moving a service from the plain
+  bearer to a verifier is a configuration change (store the digest, call the verifier pair); it can
+  be done at the same restart as a rotation step.

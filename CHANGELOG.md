@@ -11,6 +11,18 @@ exactly the moment the release notes are read most widely.
 
 ## [Unreleased]
 
+## [1.19.0] - 2026-11-08
+
+### Added
+
+* **`kw_common.bearer` verifiers**: a service can hold the hex SHA-256 of its caller's bearer
+  instead of the bearer. `bearer_verifier(token)` computes it, `accepted_verifiers(current,
+  upcoming=None)` validates one or two held digests at boot (raising `BearerConfigError` for a
+  missing current digest or a value that is not 64 hex characters, with a message that never
+  carries the value), and `check_bearer_verifier(authorization, verifiers)` hashes the presented
+  token and compares the digest with every held verifier in constant time. Header handling is
+  that of `check_bearer`. No existing name changed: holding the plain bearer keeps working.
+
 ## [1.18.0] - 2026-11-08
 
 ### Added
