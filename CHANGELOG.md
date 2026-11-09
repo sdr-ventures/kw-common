@@ -11,6 +11,19 @@ exactly the moment the release notes are read most widely.
 
 ## [Unreleased]
 
+## [1.18.0] - 2026-11-08
+
+### Added
+
+* **`kw_common.bearer`**: `check_bearer(authorization, accepted)` checks an
+  `Authorization: Bearer <token>` header against one or two accepted values in constant time (every
+  accepted value is compared on every call). A missing or malformed header, another scheme, extra
+  parts and an empty accepted set all return `False`, and the function never raises on header
+  content. `accepted_bearers(current, upcoming=None)` builds the accepted set once at boot and
+  raises `BearerConfigError` for a missing current value or a value that cannot travel in a header,
+  so a credential can rotate with no outage. Standard library only; it logs nothing and no error
+  text carries a value. The rotation procedure is in `docs/ADOPTION.md`.
+
 ## [1.17.0] - 2026-11-08
 
 ### Added

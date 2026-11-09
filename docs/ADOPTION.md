@@ -324,3 +324,47 @@ send_email("member@example.com", "[My Service] Your invitation", body_text)
 
 The shared-file path (`load_alert_settings_from_env`, `validate_boot_from_env`) is unchanged, and a
 service on that path needs none of this.
+
+## Checking a caller's bearer, and rotating it
+
+A service that has one caller, and that caller presents one managed bearer, checks it with
+`kw_common.bearer` (standard library only; it reads no environment and logs nothing).
+
+```python
+from kw_common.bearer import BearerConfigError, accepted_bearers, check_bearer
+
+# Once, at boot. The service refuses to start without a current value.
+ACCEPTED = accepted_bearers(current_from_config, next_from_config_or_none)
+
+# On every request, before the body is read.
+if not check_bearer(request_authorization_header, ACCEPTED):
+    ...  # answer 401 with no detail, and read nothing further
+```
+
+- The service reads two values from its own configuration: the current bearer (required) and an
+  optional next bearer. Where they come from (a variable, a mounted secret) is the service's own
+  choice; the function takes strings.
+- `accepted_bearers` raises `BearerConfigError` when the current value is missing or blank, or when
+  either value holds whitespace, a control character or a non-ASCII character. Catch it at boot and
+  stop. The message names which value, never what it held.
+- `check_bearer` returns `False` for every input that is not `Bearer <accepted value>`: no header,
+  another scheme, extra parts, an empty token. It never raises on header content.
+- Return the same refusal for a wrong token and a missing header, and log neither the header nor
+  the token.
+
+### Rotating the credential with no outage
+
+1. **Start.** The service holds the current value only. The caller sends it.
+2. **Accept both.** Put the new value into the service's "next" setting and restart the service.
+   It now accepts the current and the next value. The caller still sends the current one, so
+   nothing fails.
+3. **Switch the caller.** The caller starts sending the new value. It passes, because the service
+   already accepts it. If the caller must be rolled back, the old value still passes.
+4. **Drop the old value.** Once the caller has been sending the new value without error, make the
+   new value the service's current setting, clear the "next" setting, and restart. The old
+   value is now refused.
+5. **Check.** A request with the old value gets the refusal; a request with the new one passes.
+
+Do the steps in this order. Reversing steps 2 and 3 fails every request the caller makes in
+between, which is the outage this avoids. If the old value is suspected stolen, run the same steps
+without waiting in step 3, and treat any request refused in the gap as the cost.

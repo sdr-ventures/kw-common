@@ -16,13 +16,13 @@ no port, no alignment audit, and no "which copy is the good one" question to ans
 Consumers install from git at an **exact tag** — never a branch:
 
 ```
-pip install git+https://github.com/sdr-ventures/kw-common@v1.17.0
+pip install git+https://github.com/sdr-ventures/kw-common@v1.18.0
 ```
 
 In a `requirements.in` / `requirements.txt`:
 
 ```
-kw-common @ git+https://github.com/sdr-ventures/kw-common@v1.17.0
+kw-common @ git+https://github.com/sdr-ventures/kw-common@v1.18.0
 ```
 
 ⛔ **Never pin a branch.** `@main` makes every rebuild of every consumer a silent, unreviewed
@@ -41,6 +41,7 @@ documentation.
 | --- | --- |
 | `kw_common.alerting` | The `notify(severity, title, message)` contract: fan-out to email + ntfy, edge-trigger vs. escalating de-duplication, and a small retrievable JSONL error log. |
 | `kw_common.alerting_env` | The deployment layer `alerting` refuses to be: one shared config file plus three variables in, `AlertSettings` out — and the boot check that refuses to start when they are wrong. |
+| `kw_common.bearer` | Check an `Authorization: Bearer` header against one or two accepted values in constant time, so a credential rotates with no outage. Standard library only. |
 | `kw_common.leakguard` | The internal-information leak guard: shape-based scans of the tracked tree, the index, and the commits a push publishes — plus the `kw-leak-guard` command. |
 
 `import kw_common` pulls in nothing, and no module drags in one you did not ask for — `alerting`
@@ -113,6 +114,27 @@ It raises `ValueError` for a recipient that is not exactly one address, or a rec
 carrying a control character. Anything the SMTP exchange raises propagates unchanged. There is no
 retry, as there is none on an alert. Neither the subject nor the body is logged. Call it from a
 thread when on an event loop: it opens a network connection.
+
+### Checking a caller's bearer — `kw_common.bearer`
+
+An internal service with exactly one caller checks that caller's `Authorization: Bearer <token>`
+header with `check_bearer(header, accepted)`. `accepted_bearers(current, upcoming=None)` builds the
+accepted set once at boot: the current value plus, during a rotation, the next one. Both are
+compared in constant time on every call, so the credential changes with no outage.
+
+```python
+from kw_common.bearer import BearerConfigError, accepted_bearers, check_bearer
+
+current_value, next_value_or_none = "current-secret", None  # from the service's own config
+ACCEPTED = accepted_bearers(current_value, next_value_or_none)  # raises BearerConfigError at boot
+
+authorization_header = "Bearer current-secret"  # the request's Authorization header, or None
+authorised = check_bearer(authorization_header, ACCEPTED)       # False, never an exception
+```
+
+A missing or malformed header, another scheme, extra parts, and an empty accepted set all return
+`False` (it fails closed). Nothing is logged and no error text carries a value. The rotation
+procedure is in `docs/ADOPTION.md`.
 
 ## Ops alerting configuration — `kw_common.alerting_env`
 
