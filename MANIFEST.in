@@ -11,6 +11,7 @@
 # conftest have not travelled.
 include MANIFEST.in
 include README.md
+include LICENSE
 include CHANGELOG.md
 include pyproject.toml
 include .leakguard.json
