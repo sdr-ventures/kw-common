@@ -35,6 +35,13 @@ whether it is affected. ⛔ They do NOT name the consumers: this repository is p
 inventory of who installs the library is the operator's estate rather than the library's
 documentation.
 
+## Licence
+
+This is **proprietary software, not open source**. The repository is public so the copyright
+holder's own services can install it from tagged releases; copying, modifying or redistributing it
+needs the copyright holder's prior written permission. The full notice is in [`LICENSE`](LICENSE),
+and the built wheel and sdist carry it.
+
 ## What is in it
 
 | Module | What it is |

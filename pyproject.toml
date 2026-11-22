@@ -1,5 +1,8 @@
 [build-system]
-requires = ["setuptools>=68"]
+# ⭐ 77 IS THE FLOOR FOR THE `license` STRING BELOW (PEP 639). Setuptools 68 cannot read a licence
+# expression, and the older `license = {file = ...}` table is deprecated and no longer a supported
+# spelling at current setuptools.
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -10,6 +13,11 @@ readme = "README.md"
 requires-python = ">=3.10"
 authors = [{ name = "texasdaddy" }]
 keywords = ["alerting", "leak-guard", "ops"]
+# ⭐ PROPRIETARY, NOT OPEN SOURCE (Scott's decision). `LicenseRef-` is the SPDX form for a licence
+# outside the list; `LICENSE` is the notice. No `License ::` classifier: under PEP 639 setuptools
+# refuses a classifier next to a licence expression, and the expression is the one a tool reads.
+license = "LicenseRef-Proprietary"
+license-files = ["LICENSE"]
 # ⭐ ONLY THE VERSIONS CI ACTUALLY RUNS. This list claimed 3.11 and 3.13 as well, which CI never
 # measured — and this project's own README says a library that claims a version and is only ever
 # run on another is claiming something nobody checked. `requires-python = ">=3.10"` remains the
