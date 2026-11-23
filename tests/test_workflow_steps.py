@@ -274,6 +274,30 @@ def test_the_install_step_refuses_a_pin_that_can_move_or_is_malformed(tmp_path: 
     assert not (tmp_path / "kw-leak-guard").exists(), "it installed before validating"
 
 
+@needs_bash
+@pytest.mark.parametrize("repo", ["", "owner", "a/b/c", "a/b; echo pwned", "a/b\nc/d"])
+def test_the_install_step_refuses_a_source_repository_that_is_not_owner_slash_repo(
+        tmp_path: Path, repo: str) -> None:
+    script = step_script(REUSABLE, "Install the pinned guard")
+    assert BASH is not None
+    proc = subprocess.run([BASH, "-c", script], cwd=tmp_path, capture_output=True, text=True,
+                          env={**os.environ, "VERSION": "v1.2.3", "SOURCE_REPO": repo,
+                               "RUNNER_TEMP": str(tmp_path), "GITHUB_PATH": str(tmp_path / "p")},
+                          timeout=120)
+    assert proc.returncode == 1 and "not owner/repo" in proc.stdout, proc.stdout
+    assert not (tmp_path / "kw-leak-guard").exists(), "it installed before validating"
+
+
+def test_the_install_takes_the_called_workflows_repository_never_the_callers() -> None:
+    """Inside a reusable workflow `github.repository` is the CALLER's: using it would install the
+    consumer's own repository. `job.workflow_repository` is the repository holding this file."""
+    text = REUSABLE.read_text(encoding="utf-8")
+    assert "SOURCE_REPO: ${{ job.workflow_repository }}" in text
+    assert "git+https://github.com/${SOURCE_REPO}@${VERSION}" in text
+    install = step_script(REUSABLE, "Install the pinned guard")
+    assert "github.repository" not in install and "sdr-ventures" not in install
+
+
 def test_the_reusable_workflow_is_callable_and_names_its_check_like_ci() -> None:
     text = REUSABLE.read_text(encoding="utf-8")
     assert "workflow_call:" in text and "version:" in text and "required: true" in text
