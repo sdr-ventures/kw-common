@@ -68,6 +68,9 @@ jobs:
       - name: Install the pinned guard
         env:
           VERSION: ${{ inputs.version }}
+          # The repository that holds THIS workflow file, not the caller's: inside a reusable
+          # workflow `github.repository` is the caller's, so it would install the consumer's repo.
+          SOURCE_REPO: ${{ job.workflow_repository }}
         run: |
           set -eu
           # The WHOLE string, not any line of it: a multi-line value passed a per-line grep.
@@ -77,13 +80,17 @@ jobs:
             echo "::error::cannot."
             exit 1
           fi
+          if ! [[ "${SOURCE_REPO:-}" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]; then
+            echo "::error::job.workflow_repository is '${SOURCE_REPO:-}', not owner/repo."
+            exit 1
+          fi
           # Its own venv, so nothing the caller's repository installs can shadow the guard. Rebuilt
           # each run: a self-hosted runner keeps $RUNNER_TEMP between jobs.
           rm -rf "$RUNNER_TEMP/kw-leak-guard"
           python -m venv "$RUNNER_TEMP/kw-leak-guard"
           "$RUNNER_TEMP/kw-leak-guard/bin/python" -m pip install --quiet --upgrade pip
           "$RUNNER_TEMP/kw-leak-guard/bin/python" -m pip install --quiet \
-            "kw-common @ git+https://github.com/sdr-ventures/kw-common@${VERSION}"
+            "kw-common @ git+https://github.com/${SOURCE_REPO}@${VERSION}"
           echo "$RUNNER_TEMP/kw-leak-guard/bin" >> "$GITHUB_PATH"
           got="$("$RUNNER_TEMP/kw-leak-guard/bin/python" -c \
                  'import kw_common; print(kw_common.__version__)')"
